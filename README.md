@@ -1,5 +1,5 @@
 <div align="center">
-  <h1>Spatial Reasoning with Vision-Language Models in Ego-Centric Multi-view Scenes (Code Comes Soon!)</h1>
+  <h1>Spatial Reasoning with Vision-Language Models in Ego-Centric Multi-view Scenes</h1>
   <p><i>Benchmarking and Improving 3D Spatial Reasoning in Vision-Language Models</i></p>
 
 <a href="https://arxiv.org/abs/2509.06266" target="_blank">
