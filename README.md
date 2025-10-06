@@ -50,12 +50,15 @@ pip install -r requirements.txt
 
 Download the raw images of Ego3D-Bench from https://huggingface.co/datasets/vbdai/Ego3D-Bench and unzip the images in this directory ```Ego3D-Bench/images```
 
+---
 ### 📌 Benchmarking on Ego3D-Bench:
 We have scripts to benchmark internvl3 and Qwen2.5-vl families. Other families of models will be added soon! Give the path of baseline model as ```--model_path``` in the below scripts.
 ``` 
 bash scripts/internvl3.sh
 bash script/qwen_2.5_vl.sh
 ```
+
+---
 
 ### 📌 Using Ego3D-VLM:
 #### Downlaods: 
@@ -68,6 +71,8 @@ We have scripts to use ego3dvlm alongwith internvl3 and Qwen2.5-vl families. Oth
 bash scripts/internvl3_ego3dvlm.sh
 bash script/qwen_2.5_vl_ego3dvlm.sh
 ```
+
+---
 
 ### Citation:
 If you find our paper and code useful in your research, please consider giving us a star ⭐ and citing our work 📝 :)
