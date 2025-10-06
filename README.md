@@ -48,7 +48,7 @@ pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https
 pip install -r requirements.txt
 ``` 
 
-Download the raw images of Ego3D-Bench from https://huggingface.co/datasets/vbdai/Ego3D-Bench and put unzip the images in this directory ```Ego3D-Bench/images```
+Download the raw images of Ego3D-Bench from https://huggingface.co/datasets/vbdai/Ego3D-Bench and unzip the images in this directory ```Ego3D-Bench/images```
 
 ### 📌 Benchmarking on Ego3D-Bench:
 We have scripts to benchmark internvl3 and Qwen2.5-vl families. Other families of models will be added soon! Give the path of baseline model as ```--model_path``` in the below scripts.
