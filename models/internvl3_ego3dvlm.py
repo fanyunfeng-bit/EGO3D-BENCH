@@ -71,8 +71,7 @@ if __name__ == "__main__":
     model_gdino = AutoModelForZeroShotObjectDetection.from_pretrained(args.rec_model_path).to(device)
 
     ## load dataset
-    dataset = load_dataset("/home/ma-user/work/.cache/huggingface/datasets/vbdai___ego3_d-bench/default/0.0.0/60b13042271d14c223a980a773dadc58543a2d03")["test"]
-    # dataset = load_dataset("vbdai/Ego3D-Bench")['test']
+    dataset = load_dataset("vbdai/Ego3D-Bench")['test']
 
     ## output file
     processsed={}
