@@ -69,4 +69,18 @@ bash scripts/internvl3_ego3dvlm.sh
 bash script/qwen_2.5_vl_ego3dvlm.sh
 ```
 
+### Citation:
+If you find our paper and code useful in your research, please consider giving us a star ⭐ and citing our work 📝 :)
+
+```
+@misc{gholami2025spatialreasoningvisionlanguagemodels,
+      title={Spatial Reasoning with Vision-Language Models in Ego-Centric Multi-View Scenes}, 
+      author={Mohsen Gholami and Ahmad Rezaei and Zhou Weimin and Sitong Mao and Shunbo Zhou and Yong Zhang and Mohammad Akbari},
+      year={2025},
+      eprint={2509.06266},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV},
+      url={https://arxiv.org/abs/2509.06266}, 
+}
+```
 
