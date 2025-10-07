@@ -35,10 +35,6 @@ Ego3D-VLM is a post-training framework that enhances 3D spatial reasoning of VLM
 ![Sample](figs/Fig1_v2.png)
 
 ---
-### 📊 **Results**
-![Sample](figs/Res1.png)
-
----
 
 ### 📌 Set-Up
 #### Installation:
@@ -73,6 +69,13 @@ Use the path of grounding_dino checkpoint as ```--rec_model_path``` and the path
 bash scripts/internvl3_ego3dvlm.sh
 bash script/qwen_2.5_vl_ego3dvlm.sh
 ```
+
+
+---
+### 📊 **Results**
+<div align="center">
+<img src="figs/Res1.png" alt="Sample" width="700">
+</div>
 
 ---
 
