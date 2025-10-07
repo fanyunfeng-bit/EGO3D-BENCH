@@ -52,7 +52,7 @@ Download the raw images of Ego3D-Bench from https://huggingface.co/datasets/vbda
 
 ---
 ### 📌 Benchmarking on Ego3D-Bench:
-We have scripts to benchmark internvl3 and Qwen2.5-vl families. Other families of models will be added soon! Give the path of baseline model as ```--model_path``` in the below scripts.
+We have scripts to benchmark internvl3 and Qwen2.5-vl families. Other families of models will be added soon! Give the path of baseline model as ```--model_path``` in the below scripts:
 ``` 
 bash scripts/internvl3.sh
 bash script/qwen_2.5_vl.sh
@@ -65,7 +65,9 @@ bash script/qwen_2.5_vl.sh
 - Grounding-Dino: https://huggingface.co/IDEA-Research/grounding-dino-base
 - DepthAnyThing-V2-Metric: https://huggingface.co/depth-anything/Depth-Anything-V2-Metric-Outdoor-Large-hf
 
-We have scripts to use ego3dvlm alongwith internvl3 and Qwen2.5-vl families. Other families of models will be added soon! Add the path of grounding_dino checkpoint as ```--rec_model_path``` and the path of DepthAnyThing-V2-Metric as ```--depth_model_path```.
+We have scripts to use ego3dvlm with internvl3 and Qwen2.5-vl families. Other families of models will be added soon! 
+
+Use the path of grounding_dino checkpoint as ```--rec_model_path``` and the path of DepthAnyThing-V2-Metric as ```--depth_model_path``` in the below scripts:
 
 ``` 
 bash scripts/internvl3_ego3dvlm.sh
