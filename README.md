@@ -29,12 +29,7 @@ Benchmark Overview: We introduce Ego3D-Bench, a benchmark designed to evaluate t
 
 ![Sample](figs/Fig5_v3.png)
 
----
-### 🧠 **Ego3D-VLM**
-Ego3D-VLM is a post-training framework that enhances 3D spatial reasoning of VLMs. Ego3D-VLM generates cognitive map based on estimated global 3D coordinates of object in the input prompt and create a textual cognitive map baed on the input images and the question. This approach results in 12% average improvement on multi-choice QA and 56% average improvement on absolute distance estimation.
-![Sample](figs/Fig1_v2.png)
 
----
 
 ### 📌 Set-Up
 #### Installation:
@@ -46,7 +41,6 @@ pip install -r requirements.txt
 
 Download the raw images of Ego3D-Bench from https://huggingface.co/datasets/vbdai/Ego3D-Bench and unzip the images in this directory ```Ego3D-Bench/images```
 
----
 ### 📌 Benchmarking on Ego3D-Bench:
 We have scripts to benchmark internvl3 and Qwen2.5-vl families. Other families of models will be added soon! Give the path of baseline model as ```--model_path``` in the below scripts:
 ``` 
@@ -55,6 +49,10 @@ bash script/qwen_2.5_vl.sh
 ```
 
 ---
+
+### 🧠 **Ego3D-VLM**
+Ego3D-VLM is a post-training framework that enhances 3D spatial reasoning of VLMs. Ego3D-VLM generates cognitive map based on estimated global 3D coordinates of object in the input prompt and create a textual cognitive map baed on the input images and the question. This approach results in 12% average improvement on multi-choice QA and 56% average improvement on absolute distance estimation.
+![Sample](figs/Fig1_v2.png)
 
 ### 📌 Using Ego3D-VLM:
 #### Downlaods: 
