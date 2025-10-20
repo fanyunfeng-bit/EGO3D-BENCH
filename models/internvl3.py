@@ -87,7 +87,7 @@ if __name__ == "__main__":
         elif sample['source'] == 'waymo':
             image_order = ['Front','Front_Left','Side_Left','Front_Right','Side_Right']
         elif sample['source'] == 'argoverse':
-            image_order = ['Front_Left','Front','Front_Right','Right','Back_Right','Back_Left','Left']
+            image_order = ['Front_Left','Front','Front_Right','Side_Right','Back_Right','Back_Left','Side_Left']
         else:
             image_order = list(image_path.keys())
 
