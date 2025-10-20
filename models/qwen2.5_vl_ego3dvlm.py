@@ -115,7 +115,7 @@ if __name__ == "__main__":
             image_order = ['Front','Front_Left','Side_Left','Front_Right','Side_Right']
             scale = 0.8
         elif sample['source'] == 'argoverse':
-            image_order = ['Front_Left','Front','Front_Right','Right','Back_Right','Back_Left','Left']
+            image_order = ['Front_Left','Front','Front_Right','Side_Right','Back_Right','Back_Left','Side_Left']
             scale = 0.64
 
         image_path_sorted = [os.path.join(args.image_root, image_path[img]) for img in image_order]
