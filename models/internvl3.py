@@ -44,7 +44,7 @@ if __name__ == "__main__":
     ## output file
     processsed={}
     save_path={}
-    limit={}
+    # limit={}
     idx = {}
     if not os.path.exists(f"logs/{model_name}"):
         os.mkdir(f"logs/{model_name}")
@@ -52,7 +52,7 @@ if __name__ == "__main__":
         save_path[category] = f"logs/{model_name}/{category}.jsonl"
         processsed[category] = 0
         idx[category] = 0
-        limit[category] = 5
+        # limit[category] = 5
         if os.path.exists(save_path[category]):
             with open(save_path[category]) as f:
                 processsed[category] = sum(1 for _ in f)
@@ -62,7 +62,7 @@ if __name__ == "__main__":
 
         idx[sample['category']]+=1
         # skip processed samples
-        if idx[sample['category']] < processsed[sample['category']] or idx[sample['category']] > limit[sample['category']]:
+        if idx[sample['category']] < processsed[sample['category']]: # or idx[sample['category']] > limit[sample['category']]:
             continue
         
         image_path = sample['images']
