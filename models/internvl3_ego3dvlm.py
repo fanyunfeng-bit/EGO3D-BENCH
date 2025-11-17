@@ -76,7 +76,7 @@ if __name__ == "__main__":
     ## output file
     processsed={}
     save_path={}
-    limit={}
+    # limit={}
     counter = {}
     if not os.path.exists(f"logs/{model_name}-ego3dvlm"):
         os.mkdir(f"logs/{model_name}-ego3dvlm")
@@ -84,7 +84,7 @@ if __name__ == "__main__":
         save_path[category] = f"logs/{model_name}-ego3dvlm/{category}.jsonl"
         processsed[category] = 0
         counter[category] = 0
-        limit[category] = 5
+        # limit[category] = 5
         if os.path.exists(save_path[category]):
             with open(save_path[category]) as f:
                 processsed[category] = sum(1 for _ in f)
@@ -110,7 +110,7 @@ if __name__ == "__main__":
 
         counter[sample['category']]+=1
         # skip processed samples
-        if counter[sample['category']] < processsed[sample['category']] or counter[sample['category']] > limit[sample['category']]:
+        if counter[sample['category']] < processsed[sample['category']]: # or counter[sample['category']] > limit[sample['category']]:
             continue
 
         image_path = sample['images']
