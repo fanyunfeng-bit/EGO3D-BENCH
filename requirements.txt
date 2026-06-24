@@ -1,16 +1,37 @@
+# Ego3D-Bench (single-RTX-3090 fork) — pinned to the working `ego3d` conda env.
+# Python 3.10.20, CUDA 12.4. transformers is hard-pinned (4.51.1) — other versions break the runners.
+#
+# PyTorch is the CUDA 12.4 build; install it from the PyTorch index:
+--extra-index-url https://download.pytorch.org/whl/cu124
+torch==2.6.0+cu124
+torchvision==0.21.0+cu124
+
+# core HF stack
+transformers==4.51.1
+tokenizers==0.21.4
+huggingface_hub==0.36.2
+safetensors==0.7.0
+accelerate==1.10.1
+datasets==4.0.0
+pyarrow==21.0.0
+
+# model deps
 flash-attn==2.7.4.post1
 timm==1.0.20
-accelerate==1.10.1
-fonttools==4.59.0
-matplotlib==3.10.5
-numpy==1.26.4
-pyarrow==21.0.0
+einops==0.8.2
 qwen-vl-utils==0.0.11
+
+# data / images / video
+numpy==1.26.4
+pandas==2.3.3
+pillow==12.2.0
+opencv-python==4.11.0.86
+decord==0.6.0
+
+# eval / metrics / plotting
 scikit-learn==1.7.2
 scipy==1.15.3
+matplotlib==3.10.5
 seaborn==0.13.2
+fonttools==4.59.0
 tqdm==4.67.1
-transformers==4.51.1
-datasets==4.0.0
-decord==0.6.0
-opencv-python
