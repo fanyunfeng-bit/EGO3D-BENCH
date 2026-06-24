@@ -1,0 +1,15 @@
+# experiment results & data (not tracked)
+logs/
+data/
+figure_frames_cvsp/
+Ego3D-Bench/images/
+raw_images.zip
+*.zip
+# python / caches
+__pycache__/
+*.pyc
+.cache/
+.claude/
+.DS_Store
+Notes/
+RESULTS_*.md
