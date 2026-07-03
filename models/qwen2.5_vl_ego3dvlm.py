@@ -31,6 +31,15 @@ if __name__ == "__main__":
     parser.add_argument("--json_cogmap",action="store_true")
     parser.add_argument("--visual_cogmap",action="store_true")
     parser.add_argument("--image_root", type=str, default='Ego3D-Bench/images')
+    parser.add_argument("--attn", type=str, default="flash_attention_2",
+                        help="Attention backend: flash_attention_2 | sdpa | eager")
+    parser.add_argument("--limit", type=int, default=None,
+                        help="If set, only process this many samples per category (smoke test)")
+    parser.add_argument("--max_pixels", type=int, default=None,
+                        help="Optional cap on per-image vision pixels (processor default 12.8M if unset). "
+                             "Not needed for memory thanks to the last-token lm_head patch below; kept as an escape hatch.")
+    parser.add_argument("--min_pixels", type=int, default=None,
+                        help="Optional lower bound on per-image vision pixels (processor default if unset).")
     args = parser.parse_args()
     path = args.model_path
     model_name = args.model_name
@@ -48,10 +57,31 @@ if __name__ == "__main__":
         args.model_path,
         torch_dtype=torch.bfloat16,
         device_map="auto",
-        attn_implementation="flash_attention_2",
+        attn_implementation=args.attn,
     )
 
-    processor_qwen = AutoProcessor.from_pretrained(args.model_path,use_fast=True)
+    # --- Memory fix: only run lm_head on the LAST token. ---
+    # This transformers version's Qwen2_5_VL.forward has no logits_to_keep arg and runs
+    # lm_head over the FULL prompt. With 5-7 high-res views (~20k vision tokens) that logits
+    # tensor is ~6 GiB and OOMs on a 24 GB GPU. Greedy generation only ever uses the last
+    # position, so slicing here is numerically identical (no image downscaling needed).
+    import torch.nn as nn
+    class _LastTokenHead(nn.Module):
+        def __init__(self, head):
+            super().__init__()
+            self.head = head
+        def forward(self, hidden_states):
+            if hidden_states.dim() == 3 and hidden_states.size(1) > 1:
+                hidden_states = hidden_states[:, -1:, :]
+            return self.head(hidden_states)
+    model_qwen.lm_head = _LastTokenHead(model_qwen.lm_head)
+
+    _proc_kwargs = {"use_fast": True}
+    if args.max_pixels is not None:
+        _proc_kwargs["max_pixels"] = args.max_pixels
+    if args.min_pixels is not None:
+        _proc_kwargs["min_pixels"] = args.min_pixels
+    processor_qwen = AutoProcessor.from_pretrained(args.model_path, **_proc_kwargs)
       
     processor_depth = AutoImageProcessor.from_pretrained(args.depth_model_path)
     model_depth = AutoModelForDepthEstimation.from_pretrained(args.depth_model_path).to(device)
@@ -67,8 +97,7 @@ if __name__ == "__main__":
     save_path={}
     # limit={}
     counter = {}
-    if not os.path.exists(f"logs/{model_name}-ego3dvlm"):
-        os.mkdir(f"logs/{model_name}-ego3dvlm")
+    os.makedirs(f"logs/{model_name}-ego3dvlm", exist_ok=True)
     for category in set(dataset['category']):
         save_path[category] = f"logs/{model_name}-ego3dvlm/{category}.jsonl"
         processsed[category] = 0
@@ -98,8 +127,11 @@ if __name__ == "__main__":
             cog_map+="Positive z means infront of the ego car and negative z means behind the ego car"
 
         counter[sample['category']]+=1
-        # skip processed samples
-        if (counter[sample['category']] < processsed[sample['category']]): # or (counter[sample['category']] > limit[sample['category']]):
+        # skip already-processed samples (resume): skip exactly `processsed` per category
+        if (counter[sample['category']] <= processsed[sample['category']]): # or (counter[sample['category']] > limit[sample['category']]):
+            continue
+        # smoke-test cap: only the first --limit samples per category
+        if args.limit is not None and counter[sample['category']] > args.limit:
             continue
 
         image_path = sample['images']
@@ -169,31 +201,40 @@ if __name__ == "__main__":
         question_trimed=[qs.replace('?','') for qs in question_trimed]
         text_labels=[question_trimed]*len(images)
 
-        inputs_gdino = processor_gdino(images=images, text=text_labels, return_tensors="pt").to(device)
-
-        inputs_depth = processor_depth(images=images, return_tensors="pt").to(device)
-
+        # Run REC (Grounding-DINO) and depth one view at a time to cap activation
+        # memory (batched inference over all high-res views OOMs on 24GB GPUs).
+        # Results are identical to the batched path; only the peak memory differs.
+        predictions_gdino = []
+        depth_maps = []
         with torch.no_grad():
-            outputs_gdino = model_gdino(**inputs_gdino)
-            outputs_depth = model_depth(**inputs_depth).predicted_depth
-        
-        
-        predictions_gdino = processor_gdino.post_process_grounded_object_detection(
-            outputs_gdino,
-            inputs_gdino.input_ids,
-            box_threshold=0.4,
-            text_threshold=0.3,
-            target_sizes=target_sizes
-        )
+            for img_i, img in enumerate(images):
+                inp_g = processor_gdino(images=[img], text=[text_labels[img_i]], return_tensors="pt").to(device)
+                out_g = model_gdino(**inp_g)
+                pred_g = processor_gdino.post_process_grounded_object_detection(
+                    out_g,
+                    inp_g.input_ids,
+                    box_threshold=0.4,
+                    text_threshold=0.3,
+                    target_sizes=[target_sizes[img_i]],
+                )[0]
+                predictions_gdino.append(pred_g)
+                del inp_g, out_g
 
-        # interpolate to original size
-        prediction_depth = torch.nn.functional.interpolate(
-            outputs_depth.unsqueeze(1),
-            size=target_sizes[0], #image.size[::-1],
-            mode="bicubic",
-            align_corners=False,
-        ).squeeze()*scale
-        
+                inp_d = processor_depth(images=[img], return_tensors="pt").to(device)
+                out_d = model_depth(**inp_d).predicted_depth
+                depth_map = torch.nn.functional.interpolate(
+                    out_d.unsqueeze(1),
+                    size=target_sizes[img_i],
+                    mode="bicubic",
+                    align_corners=False,
+                ).squeeze() * scale
+                depth_maps.append(depth_map)
+                del inp_d, out_d
+            torch.cuda.empty_cache()
+
+        # (V, H, W) stacked depth, matching the original batched tensor shape
+        prediction_depth = torch.stack(depth_maps)
+
         
         world_coords = unproject(cams_K.float(), cams_RT.float(), prediction_depth.float()).cpu()    # (V, H, W, 3)
         bboxes_list = []

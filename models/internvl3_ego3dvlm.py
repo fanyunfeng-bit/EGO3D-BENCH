@@ -78,8 +78,7 @@ if __name__ == "__main__":
     save_path={}
     # limit={}
     counter = {}
-    if not os.path.exists(f"logs/{model_name}-ego3dvlm"):
-        os.mkdir(f"logs/{model_name}-ego3dvlm")
+    os.makedirs(f"logs/{model_name}-ego3dvlm", exist_ok=True)
     for category in set(dataset['category']):
         save_path[category] = f"logs/{model_name}-ego3dvlm/{category}.jsonl"
         processsed[category] = 0
@@ -180,31 +179,40 @@ if __name__ == "__main__":
         question_trimed=[qs.replace('?','') for qs in question_trimed]
         text_labels=[question_trimed]*len(images)
 
-        inputs_gdino = processor_gdino(images=images, text=text_labels, return_tensors="pt").to(device)
-
-        inputs_depth = processor_depth(images=images, return_tensors="pt").to(device)
-
+        # Run REC (Grounding-DINO) and depth one view at a time to cap activation
+        # memory (batched inference over all high-res views OOMs on 24GB GPUs).
+        # Results are identical to the batched path; only the peak memory differs.
+        predictions_gdino = []
+        depth_maps = []
         with torch.no_grad():
-            outputs_gdino = model_gdino(**inputs_gdino)
-            outputs_depth = model_depth(**inputs_depth).predicted_depth
-        
-        
-        predictions_gdino = processor_gdino.post_process_grounded_object_detection(
-            outputs_gdino,
-            inputs_gdino.input_ids,
-            box_threshold=0.4,
-            text_threshold=0.3,
-            target_sizes=target_sizes
-        )
+            for img_i, img in enumerate(images):
+                inp_g = processor_gdino(images=[img], text=[text_labels[img_i]], return_tensors="pt").to(device)
+                out_g = model_gdino(**inp_g)
+                pred_g = processor_gdino.post_process_grounded_object_detection(
+                    out_g,
+                    inp_g.input_ids,
+                    box_threshold=0.4,
+                    text_threshold=0.3,
+                    target_sizes=[target_sizes[img_i]],
+                )[0]
+                predictions_gdino.append(pred_g)
+                del inp_g, out_g
 
-        # interpolate to original size
-        prediction_depth = torch.nn.functional.interpolate(
-            outputs_depth.unsqueeze(1),
-            size=target_sizes[0], #image.size[::-1],
-            mode="bicubic",
-            align_corners=False,
-        ).squeeze()*scale
-        
+                inp_d = processor_depth(images=[img], return_tensors="pt").to(device)
+                out_d = model_depth(**inp_d).predicted_depth
+                depth_map = torch.nn.functional.interpolate(
+                    out_d.unsqueeze(1),
+                    size=target_sizes[img_i],
+                    mode="bicubic",
+                    align_corners=False,
+                ).squeeze() * scale
+                depth_maps.append(depth_map)
+                del inp_d, out_d
+            torch.cuda.empty_cache()
+
+        # (V, H, W) stacked depth, matching the original batched tensor shape
+        prediction_depth = torch.stack(depth_maps)
+
         
         world_coords = unproject(cams_K.float(), cams_RT.float(), prediction_depth.float()).cpu()    # (V, H, W, 3)
         bboxes_list = []

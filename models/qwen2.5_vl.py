@@ -19,6 +19,15 @@ if __name__ == "__main__":
     parser.add_argument("--model_path", type=str, required=True)
     parser.add_argument("--model_name", type=str, required=True)
     parser.add_argument("--image_root", type=str, default='Ego3D-Bench/images')
+    parser.add_argument("--attn", type=str, default="flash_attention_2",
+                        help="Attention backend: flash_attention_2 | sdpa | eager")
+    parser.add_argument("--limit", type=int, default=None,
+                        help="If set, only process this many samples per category (smoke test)")
+    parser.add_argument("--max_pixels", type=int, default=None,
+                        help="Optional cap on per-image vision pixels (processor default 12.8M if unset). "
+                             "Not needed for memory thanks to the last-token lm_head patch below; kept as an escape hatch.")
+    parser.add_argument("--min_pixels", type=int, default=None,
+                        help="Optional lower bound on per-image vision pixels (processor default if unset).")
     args = parser.parse_args()
 
     path = args.model_path
@@ -31,10 +40,31 @@ if __name__ == "__main__":
         args.model_path,
         torch_dtype=torch.bfloat16,
         device_map="auto",
-        attn_implementation="flash_attention_2",
+        attn_implementation=args.attn,
     )
 
-    processor_qwen = AutoProcessor.from_pretrained(args.model_path,use_fast=True)
+    # --- Memory fix: only run lm_head on the LAST token. ---
+    # This transformers version's Qwen2_5_VL.forward has no logits_to_keep arg and runs
+    # lm_head over the FULL prompt. With 5-7 high-res views (~20k vision tokens) that logits
+    # tensor is ~6 GiB and OOMs on a 24 GB GPU. Greedy generation only ever uses the last
+    # position, so slicing here is numerically identical (no image downscaling needed).
+    import torch.nn as nn
+    class _LastTokenHead(nn.Module):
+        def __init__(self, head):
+            super().__init__()
+            self.head = head
+        def forward(self, hidden_states):
+            if hidden_states.dim() == 3 and hidden_states.size(1) > 1:
+                hidden_states = hidden_states[:, -1:, :]
+            return self.head(hidden_states)
+    model_qwen.lm_head = _LastTokenHead(model_qwen.lm_head)
+
+    _proc_kwargs = {"use_fast": True}
+    if args.max_pixels is not None:
+        _proc_kwargs["max_pixels"] = args.max_pixels
+    if args.min_pixels is not None:
+        _proc_kwargs["min_pixels"] = args.min_pixels
+    processor_qwen = AutoProcessor.from_pretrained(args.model_path, **_proc_kwargs)
 
     ## load dataset
     dataset = load_dataset("vbdai/Ego3D-Bench")['test']
@@ -44,8 +74,7 @@ if __name__ == "__main__":
     save_path={}
     # limit={}
     idx = {}
-    if not os.path.exists(f"logs/{model_name}"):
-        os.mkdir(f"logs/{model_name}")
+    os.makedirs(f"logs/{model_name}", exist_ok=True)
     for category in set(dataset['category']):
         save_path[category] = f"logs/{model_name}/{category}.jsonl"
         processsed[category] = 0
@@ -58,10 +87,13 @@ if __name__ == "__main__":
     
     for sample in tqdm(dataset):
         idx[sample['category']]+=1
-        # skip processed samples
-        if idx[sample['category']] < processsed[sample['category']]: # or idx[sample['category']] > limit[sample['category']]:
+        # skip already-processed samples (resume): skip exactly `processsed` per category
+        if idx[sample['category']] <= processsed[sample['category']]: # or idx[sample['category']] > limit[sample['category']]:
             continue
-        
+        # smoke-test cap: only the first --limit samples per category
+        if args.limit is not None and idx[sample['category']] > args.limit:
+            continue
+
         image_path = sample['images']
         question = sample['question']
         answer = sample['answer']
@@ -73,9 +105,11 @@ if __name__ == "__main__":
 
         if sample['category'] in ['Ego_Centric_Absolute_Distance','Object_Centric_Absolute_Distance']:
             question += "\nOutput the thinking process in <think> </think> and final answer (number only) in <answer> </answer> tags."
-        elif sample['category'] in ['Ego_Centric_Relative_Distance','Ego_Centric_Motion_Reasoning','Object_Centric_Motion_Reasoning']:
-            question += "\nOutput the thinking process in <think> </think> and final answer (yes or no) in <answer> </answer> tags."
         else:
+            # NOTE: all non-exact-number categories are multiple-choice with a LETTER ground
+            # truth (A/B/...). Upstream told relative-distance / motion-reasoning to answer
+            # "yes or no", which never matches the letter GT -> spurious 0.0 accuracy. Ask for
+            # the letter for every multiple-choice category (matches GT and the ego3dvlm script).
             question += "\nOutput the thinking process in <think> </think> and final answer (only the letter of the choice) in <answer> </answer> tags."
 
         # determine image order

@@ -1,0 +1,14 @@
+# Downloaded / generated data & assets (regenerable, and too large for GitHub — the
+# 100 MB/file limit and repo bloat). Regenerate via scripts/prep_vsibench.py etc.
+data/
+logs/
+Ego3D-Bench/images/
+figure_frames_cvsp/
+*.zip
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Editor / OS
+.DS_Store

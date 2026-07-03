@@ -46,8 +46,7 @@ if __name__ == "__main__":
     save_path={}
     # limit={}
     idx = {}
-    if not os.path.exists(f"logs/{model_name}"):
-        os.mkdir(f"logs/{model_name}")
+    os.makedirs(f"logs/{model_name}", exist_ok=True)
     for category in set(dataset['category']):
         save_path[category] = f"logs/{model_name}/{category}.jsonl"
         processsed[category] = 0
