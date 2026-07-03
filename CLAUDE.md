@@ -204,15 +204,34 @@ standalone study, resumable per-(task,method) JSONL, run under the `ego3d` env. 
 - `vision_ablation.py` — real / keep10 / black-image / noise-feature controls (does the model use
   vision at all). `redundancy_analysis.py` + `p4_fps_causal.py` — cross-view redundancy/coverage
   metrics and the FPS causal test.
+- `eval_cvsp.py` / `eval_sweep1.py` / `eval_stage2.py` — Harness-B **viewers + go/no-go gates**:
+  `eval_cvsp.py` prints the per-config ACC table over `logs/cvsp/` (safe to run mid-curve);
+  `eval_sweep1.py` / `eval_stage2.py` encode the sign-test decisions (does a cvsp setting beat
+  VisPruner **and** random on ≥N/M task×budget cells) and write `logs/cvsp/*.decision.json`.
+  The many `scripts/run_*.sh` are thin wrappers that chain these curve/sweep/decision steps —
+  `docs/算法运行指南.md` is authoritative for which to run.
 
-**Current empirical verdict (2026-06-24; authoritative source = `Notes/Visual-Compression.md`
-§实测发现 D–J + §O full-data table, and `Notes/CVSP-Story.md` 实验现状):** dropping 90% of visual
+**Current empirical verdict (2026-06-24, anchor line 2026-07-01; authoritative source =
+`Notes/Visual-Compression.md` §实测发现 D–J + §O full-data table, `Notes/CVSP-Story.md` 实验现状,
+and `Notes/Anchor-Validation.md` §9–11):** dropping 90% of visual
 tokens barely hurts Ego3D ACC, and the vision ablation shows the visual signal is small and
 redundant while the model leans heavily on language priors. Across budgets and both datasets, **no
 informed selector reliably beats stratified random — and this now extends to the query-aware
 methods, not just the query-agnostic ones:**
 - Query-agnostic line (saliency / diversity / leverage / anchor / log-det engine, and the tuned
   single-stage **a20s40**): overall ≈ or < random.
+- **Anchor existence — refined 2026-07-01 (`Notes/Anchor-Validation.md` §9–11).** The flat "anchor
+  doesn't help" is too strong: a *no-dedup* geometric oracle (VGGT cross-view co-visibility × surface
+  variation, injected as `ρ_a` anchors + rest per-view-random) gives a **dose-dependent +~0.02 ACC on
+  cross-view *relational* tasks** (`object_rel_direction/distance`), washing out on
+  coverage/counting. So load-bearing cross-view tokens **do exist** — earlier NO-GO was a
+  cross-view-dedup artifact (dedup destroys anchor multiplicity; **never dedup anchors across views**).
+  A **pure-feature** anchor `support × sharpness` (support = #views with cross-view cosine `s1>τ` &
+  Lowe `margin>m`; best **τ0.6/m0.12**) reaches ~2/3 of the oracle (+0.016–0.022) and **beats
+  a20s40's `cornerness × lowe_max`** (which ≈ random) head-to-head — but is still **within ~1 SE,
+  τ/m-sensitive, and does not beat random overall**. Mechanism: margin median ≈0.019, so only ~3% of
+  cross-view matches are sharp/unique (real landmarks) → gains are inherently small. Defensible claim:
+  *"anchors exist and `support×sharpness` > `cornerness×lowe_max`,"* **not** *"beats random."*
 - Query-aware **two-stage** (`input_cos r7`, the GeoScaffold direction) on full Ego3D (§O): beats
   **VisPruner 8/14** and **greatly improves absolute-distance** (Object_AbsD RMSE 13.9 vs 17.5),
   but **does not beat `plain_random` overall** (5/14); it wins the absolute-distance family and
