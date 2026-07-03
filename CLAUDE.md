@@ -80,9 +80,24 @@ The post-training framework adds, per sample, before the VLM call:
 - **Two number categories** `['Ego_Centric_Absolute_Distance','Object_Centric_Absolute_Distance']`
   vs **eight multiple-choice** categories. This exact list is duplicated in every runner **twice**
   (prompt selection + eval selection) — keep all occurrences in sync.
-- Multiple-choice GT is the option **letter** (A/B). Prompts must ask for "the letter of the
-  choice"; an upstream bug asked relative-distance / motion-reasoning for "yes or no", scoring a
-  spurious 0.000 (fixed here in `qwen2.5_vl.py` — see `RESULTS_baseline.md`).
+- Multiple-choice GT is the option **letter**, but the option count differs by category, so the
+  **chance baseline differs** — this matters when comparing to the paper:
+  - **4-option (A/B/C/D, chance 25%):** `*_Absolute_Distance_MultiChoice`, `Localization`,
+    `Travel_Time`.
+  - **binary (A/B, chance 50%):** `*_Relative_Distance`, `*_Motion_Reasoning`.
+  Prompts must ask for "the letter of the choice"; an upstream bug asked relative-distance /
+  motion-reasoning for "yes or no", scoring a spurious 0.000 (fixed here in `qwen2.5_vl.py` — see
+  `RESULTS_baseline.md`). NB: our `*_Absolute_Distance_MultiChoice` ACC (~0.50 for InternVL3-8B) is
+  ~2× the paper's ~0.26–0.29; that is **not** a scoring bug (scoring verified: 4-way, GT letter
+  ~uniform, clean single-letter parse, exact match) and **not** the CoT prompt (a no-`<think>`
+  single-letter run scores the same ~0.40–0.54 — tested). Root cause = the released HF dataset's
+  **MC distractors are uncalibrated**: the GT distance clusters near ~14–16 m and is almost never
+  the largest option (Ego 3% / Object 8% of GTs are the max value), so a **value-only prior that
+  never looks at the image** already scores ~0.40–0.55 ("closest-to-global-mean" = 0.55 on Ego,
+  "2nd-smallest" = 0.48). The paper's ≈chance numbers imply **balanced distractors** that neutralize
+  this prior. Consistent with the vision ablation (black-image still 0.31–0.39 ≫ 0.25; real images
+  add only ~9–12 pp) → these MC ACCs are largely a distractor artifact + language prior, not metric
+  spatial ability. See `logs/ablation/` and the verdict below.
 - Per-source fixed `image_order` (nuscenes 6 / waymo 5 / argoverse 7 views); sample `images` is
   a dict keyed by view name, resolved against `--image_root` (default `Ego3D-Bench/images`).
 - **Resume** = counting existing JSONL lines per category and skipping that many (`<=`, so an
@@ -110,40 +125,70 @@ These are the reason the fork exists — preserve them when editing the runners 
 This is what the parent "Multi-View-Compression" project actually investigates; the benchmark
 above is just the harness. **Question: in multi-view VLM inputs the visual tokens are very
 redundant — can an *informed* selection of which tokens to keep beat dropping them at random,
-at extreme compression?** The proposed method is **CVSP** (Cross-View Support Pruning): extend
-VisPruner from per-view to cross-view, training-free / pose-free / query-agnostic. The `Notes/`
-files are the design + empirical archive (read these before proposing method changes — many
-approaches have already been tried and falsified, see the verdict at the end of this section).
+at extreme compression?** The original method is **CVSP** (Cross-View Support Pruning): extend
+VisPruner from per-view to cross-view, training-free / pose-free / query-agnostic. After CVSP's
+query-agnostic line was found to not beat random (verdict below), the active direction pivoted to
+**query-aware staged compression** (working name **GeoScaffold** / "two-stage"): a cacheable
+query-agnostic cross-view 3D scaffold pre-LLM, then a query-conditional coarse-to-fine refine
+*inside* the LLM. The `Notes/` files are the design + empirical archive — **read these before
+proposing method changes** (`CVSP-Method.md` = current spec §12 single-stage / §13 two-stage;
+`GeoScaffold-Story.md` = the pivot; `Visual-Compression.md` + `CVSP-Story.md` = empirical log;
+`Anchor-Validation.md` = the open track to validate whether cross-view "load-bearing" tokens
+exist / where the model binds across views, via clean probes + a geometry oracle instead of the
+contaminated MC ACC — incl. a probing→LoRA "activate unused spatial info" agenda);
+many approaches have already been tried and falsified, see the verdict at the end of this section.
 
-**Pluggable compressor (`compressors/`)** — a model-agnostic `TokenCompressor.select(importance,
-features, keep, seed)` returns the kept-token indices for ONE image, at the granularity that
-actually enters the LLM (InternVL3: 256 post-pixel-shuffle tokens/tile). Implementations:
-`vispruner` (faithful port: top-k by ViT CLS→patch attention + ToMe diverse tokens) and `random`
-(uniform, `needs_importance=False`). Register new methods in `compressors/__init__.py`;
-`build_compressor(name)` selects one (`none` = baseline). **Model-specific plumbing lives in the
-adapters**, not the compressor: `internvl_adapter.py` (`AttentionCapture` forces one InternViT
-layer onto the naive attention path to stash CLS→patch attention; `compute_visual_features`
-prunes per tile and returns features for `model.generate(visual_features=...)`) and
-`qwen_adapter.py` (Qwen has no CLS / uses windowed attention + a 2×2 merger → patches the
-mid full-attention block, uses attention-*received* as the cue, un-permutes via `window_index`).
+**`docs/算法运行指南.md` is the authoritative run guide for this whole compression layer** (every
+method's exact command, params, output path, and scoring) — keep it and this section in sync.
 
-**Compression runners** — `models/internvl3_compress.py` (Ego3D), `models/internvl3_vsibench.py`
-and `models/qwen2.5_vl_vsibench.py` (VSI-Bench). They do NOT modify the baseline runners. The
-visual features (full or pruned) are computed *outside* the timed region; the timed region is the
-LLM `generate` over the reduced sequence, with `encode_ms` logged separately. Efficiency is
-metered by `utils/efficiency.py` (prefill FLOPs / KV-cache bytes / peak GPU mem / CUDA time,
-VisPruner/FastV convention).
+**Two harnesses — and the headline methods live in only one of them.** This is the most common
+trip-up:
+- **Harness A** — `models/internvl3_compress.py` (Ego3D), `models/internvl3_vsibench.py` and
+  `models/qwen2.5_vl_vsibench.py` (VSI). Selected with `--compress_method {none|vispruner|random}`,
+  limited to the **`compressors/` registry**. This is the **efficiency + simple-baseline** harness:
+  it writes `*.result.json` with FLOPs/KV/mem/time. Visual features are computed *outside* the
+  timed region; the timed region is the LLM `generate` over the reduced sequence (`encode_ms`
+  logged separately). Metered by `utils/efficiency.py` (VisPruner/FastV convention).
+- **Harness B** — `scripts/cvsp_curve.py` (hosts `cvsp`=a20s40, `block_cvsp`, plus baselines) and
+  `scripts/qstage_curve.py` (the **two-stage query-aware** method). Selected with `--methods` /
+  `--signal`, **not** `--compress_method`. Writes **accuracy-only** JSONL to `logs/cvsp/`. The
+  headline methods (a20s40, block-cvsp, two-stage) exist **only here** — they are not in the
+  registry and cannot be run via `--compress_method`. `scripts/four_way_extreme.py` is the shared
+  backbone (sample `collect`, prompt build, `cornerness`/`lowe_max`, selectors) imported by both.
+
+**Pluggable compressor (`compressors/`, used by Harness A only)** — a model-agnostic
+`TokenCompressor.select(importance, features, keep, seed)` returns the kept-token indices for ONE
+image, at the granularity that actually enters the LLM (InternVL3: 256 post-pixel-shuffle
+tokens/tile). Registry implementations: `vispruner` (faithful port: top-k by ViT CLS→patch
+attention + ToMe diverse tokens) and `random` (uniform, `needs_importance=False`). Register new
+per-image selectors in `compressors/__init__.py`; `build_compressor(name)` selects one (`none` =
+baseline). `compressors/qstage_llm.py` is **not** a `TokenCompressor` — it is the in-LLM two-stage
+controller (`QStage` + `make_qstage_forward` patch InternVL3's `Qwen2Model.forward` to prune
+vision tokens at decoder layer K with PESP position handling) used by `qstage_curve.py`.
+**Model-specific plumbing lives in the adapters**, not the compressor: `internvl_adapter.py`
+(`AttentionCapture` forces one InternViT layer onto the naive attention path to stash CLS→patch
+attention; `compute_visual_features` prunes per tile and returns features for
+`model.generate(visual_features=...)`) and `qwen_adapter.py` (Qwen has no CLS / uses windowed
+attention + a 2×2 merger → patches the mid full-attention block, uses attention-*received* as the
+cue, un-permutes via `window_index`).
 
 **Key conventions specific to this layer:**
-- `--compress_method {none|vispruner|random}` + `--keep_ratio` (e.g. `0.1` = keep 10% = "keep10",
-  the 90%-pruned setting). Log dirs: `logs/<model>-<method>-keep<NN>[-vsibench]/`.
+- Harness A: `--compress_method {none|vispruner|random}` + `--keep_ratio` (e.g. `0.1` = keep 10% =
+  "keep10", the 90%-pruned setting). Log dirs: `logs/<model>-<method>-keep<NN>[-vsibench]/`.
+- Harness B: `--ratios` (comma-sep keep fractions) + `--methods`/`--signal`; for `cvsp`/`block_cvsp`
+  **always pass the same `--tag`** when re-running or you won't find/score the file. Output:
+  `logs/cvsp/<ds>.<task>.keep<pct>.<method><tag>.jsonl`. `--methods cvsp` = a20s40 (ρ_a=0.2/ρ_s=0.4,
+  3-bucket anchor/saliency/coverage); `qstage_curve.py --signal input_cos --r 7` = the headline
+  two-stage. `utils/aggregate_compress.py` collates Harness-A baseline-vs-compressed result jsons.
 - **Determinism is mandatory**: `random` seeds per view from `SeedSequence([base_seed, sample_id,
-  view])`, so a method reproduces identical pruning across reruns and is resume-safe. Same
-  resume-by-line-count rule as the benchmark runners.
+  view])`, so a method reproduces identical pruning across reruns and is resume-safe. Resume is by
+  JSONL line count, and sample order is deterministic, so an `--n 200` file is a true prefix of the
+  `--n 99999` (full) file and is auto-extended, not re-run.
 - **Score Ego3D by ACC, not RMSE.** Pruning *improves* RMSE as an artifact (regression to the
   mean / fewer clamped outliers) while ACC drops — RMSE is misleading on these tasks.
 - VSI-Bench must be prepped first: `python scripts/prep_vsibench.py --sources …` samples N uniform
-  frames/video into `data/vsibench/`. Treat the frames as the multi-view input.
+  frames/video into `data/vsibench/`. Treat the frames as the multi-view input. Keep `--frames`
+  consistent between prep and the VSI runners.
 
 **Diagnostic / experiment scripts (`scripts/*.py`, not part of the benchmark)** — each is a
 standalone study, resumable per-(task,method) JSONL, run under the `ego3d` env. They set
@@ -152,18 +197,31 @@ standalone study, resumable per-(task,method) JSONL, run under the `ego3d` env. 
   of the token Gram vs a random-Gaussian null. (Finding: effective rank ≈84 ≪ keep10 budget,
   so random over-covers the subspace — selection can only matter at keep ≤5%.)
 - `four_way_extreme.py` — stratified-random vs anchor (cornerness × cross-view Lowe) vs
-  ridge-leverage vs quality-weighted log-det "engine", at keep5/keep3 on Ego3D + VSI.
+  ridge-leverage vs quality-weighted log-det "engine", at keep5/keep3 on Ego3D + VSI. **Also the
+  shared backbone imported by the Harness-B curve runners** (`cvsp_curve.py` / `qstage_curve.py`).
+- `anchor_spread.py` — how concentrated block-cvsp Layer-1 anchors are across views (finding:
+  anchors already spread, so explicit cross-view pairing isn't worth it).
 - `vision_ablation.py` — real / keep10 / black-image / noise-feature controls (does the model use
   vision at all). `redundancy_analysis.py` + `p4_fps_causal.py` — cross-view redundancy/coverage
   metrics and the FPS causal test.
 
-**Current empirical verdict (2026-06-18; authoritative source = `Notes/Visual-Compression.md`
-§实测发现 D–J and `Notes/CVSP-Story.md` 实验现状):** dropping 90% of visual tokens barely hurts
-Ego3D ACC; **no query-agnostic informed selector (saliency / diversity / leverage / anchor /
-log-det engine) reliably beats stratified random** across budgets and both datasets. The vision
-ablation shows the visual signal is small and redundant and the model leans heavily on language
-priors. So CVSP currently has **no evidence as an accuracy method**; the defensible paper is the
-efficiency + counter-intuitive-findings story. The one live lead is `anchor` on high-overlap VSI
-spatial tasks (modest, inconsistent). The `Notes/` design docs carry ⚠️ time-banners marking the
-older "compression also *improves* accuracy" framing as superseded — **don't resurrect a
-falsified approach; check the verdict first.**
+**Current empirical verdict (2026-06-24; authoritative source = `Notes/Visual-Compression.md`
+§实测发现 D–J + §O full-data table, and `Notes/CVSP-Story.md` 实验现状):** dropping 90% of visual
+tokens barely hurts Ego3D ACC, and the vision ablation shows the visual signal is small and
+redundant while the model leans heavily on language priors. Across budgets and both datasets, **no
+informed selector reliably beats stratified random — and this now extends to the query-aware
+methods, not just the query-agnostic ones:**
+- Query-agnostic line (saliency / diversity / leverage / anchor / log-det engine, and the tuned
+  single-stage **a20s40**): overall ≈ or < random.
+- Query-aware **two-stage** (`input_cos r7`, the GeoScaffold direction) on full Ego3D (§O): beats
+  **VisPruner 8/14** and **greatly improves absolute-distance** (Object_AbsD RMSE 13.9 vs 17.5),
+  but **does not beat `plain_random` overall** (5/14); it wins the absolute-distance family and
+  loses the relative/localization family (query pruning sacrifices coverage). Single-stage a20s40
+  ≥ two-stage (5/7 at keep10) — the extra in-LLM query prune gave no net gain.
+
+So the defensible empirical claim is **"beats VisPruner + improves absolute-distance,"** NOT "beats
+random." The **"efficiency / counter-intuitive-findings" paper was explicitly withdrawn as a safety
+net (2026-06-18 decision)** — the project's accuracy story now rests on actually beating random in
+the extreme-compression regime (keep ≤5%, where the budget < effective rank ~84). The `Notes/`
+design docs carry ⚠️ time-banners marking the older "compression also *improves* accuracy" framing
+as superseded — **don't resurrect a falsified approach; check the verdict (and §O) first.**
