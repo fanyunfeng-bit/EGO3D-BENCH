@@ -23,13 +23,17 @@ class FastVInternVL:
         lm_model._qs = self.qs
         make_qstage_forward(lm_model)
 
-    def configure(self, input_ids, img_token_id, keep_ratio, n_visual):
+    def configure(self, input_ids, img_token_id, keep_ratio, n_views):
         ids = input_ids.reshape(-1)
         vis_pos = torch.where(ids == img_token_id)[0]
         last_vis = int(vis_pos[-1].item())
         self.qs.vis_pos = vis_pos
         self.qs.query_pos = torch.arange(last_vis + 1, ids.shape[0], device=ids.device)
-        self.qs.N2 = max(1, round(keep_ratio * n_visual))
+        n_tok = vis_pos.numel() // n_views
+        self.qs.keep_pv = max(1, round(keep_ratio * n_tok))   # per-view budget (matches baselines)
+        self.qs.n_views = n_views
+        self.qs.per_view = True                                # FastV = rank/keep within each view
+        self.qs.N2 = self.qs.keep_pv * n_views                 # bookkeeping (total kept)
         self.qs.kept_vis = None
         self.qs.active = True
 
@@ -88,11 +92,14 @@ class QwenFastV:
     def __init__(self, K=2):
         self.K = int(K)
         self.active = False
-        self.N2 = None            # tokens to keep after layer K
+        self.N2 = None            # tokens to keep after layer K (global bookkeeping)
         self.vis_pos = None       # LongTensor of visual token indices in the prompt
         self.last_q = None        # index of the last prompt token (unused; last row = -1)
         self.kept = None          # stashed keep indices (prompt positions), reused across decode
         self.capture = None       # QwenLLMAttentionCapture on layer K-1
+        self.per_view = True      # FastV = per-view: rank/keep top keep_pv WITHIN each view
+        self.n_views = None
+        self.keep_pv = None       # tokens to keep per view
 
 
 def make_fastv_forward_qwen(text_model, ctrl):
@@ -155,8 +162,14 @@ def make_fastv_forward_qwen(text_model, ctrl):
                 if ctrl.kept is None:
                     vis = ctrl.vis_pos.to(hidden_states.device)
                     score = ctrl.capture.last_row[vis]                   # last query -> each visual token
-                    n2 = min(int(ctrl.N2), vis.numel())
-                    ctrl.kept = vis[torch.topk(score, n2).indices].sort().values
+                    if ctrl.per_view and ctrl.n_views:
+                        nv = int(ctrl.n_views); ntok = vis.numel() // nv; kp = min(int(ctrl.keep_pv), ntok)
+                        loc = score.view(nv, ntok).topk(kp, dim=1).indices   # (nv, kp) within-view
+                        off = (torch.arange(nv, device=vis.device) * ntok).unsqueeze(1)
+                        ctrl.kept = vis[(loc + off).reshape(-1)].sort().values
+                    else:
+                        n2 = min(int(ctrl.N2), vis.numel())
+                        ctrl.kept = vis[torch.topk(score, n2).indices].sort().values
 
         hidden_states = self.norm(hidden_states)
         return BaseModelOutputWithPast(last_hidden_state=hidden_states,

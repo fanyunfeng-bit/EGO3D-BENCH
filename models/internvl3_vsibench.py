@@ -173,8 +173,8 @@ def run_category(model, tokenizer, items, category, args, compressor, capture, t
         seq_len = input_ids.shape[1]
         n_visual = sum(img_tokens) if isinstance(img_tokens, list) else img_tokens * n_frames
 
-        if fastv is not None:      # FastV: prune in-LLM at layer K by last-token attention
-            fastv.configure(input_ids, model.img_context_token_id, args.keep_ratio, n_visual)
+        if fastv is not None:      # FastV: prune in-LLM at layer K by last-token attention (per-view)
+            fastv.configure(input_ids, model.img_context_token_id, args.keep_ratio, n_frames)
         with efficiency.GpuProfile() as prof:
             generated = model.generate(
                 pixel_values=pixel_values, input_ids=input_ids,

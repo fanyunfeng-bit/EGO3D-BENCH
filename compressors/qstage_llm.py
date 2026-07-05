@@ -31,10 +31,15 @@ class QStage:
         self.query_pos = None             # LongTensor: question token indices (for cosine q_bar)
         self.kept_vis = None              # stashed kept vision indices (orig), reused across decode
         self.last_avg_tokens = None       # bookkeeping: layer-average vision-token count
+        self.per_view = False             # FastV per-view variant: rank/keep within each view
+        self.n_views = None               # # views (per_view); vision tokens are grouped per view
+        self.keep_pv = None               # tokens to keep per view (per_view)
 
 
 def _select_keep(qs, hidden_states, attn_K_minus_1):
-    """Return sorted LongTensor of vision indices to KEEP (length N2), computed at prefill."""
+    """Return sorted LongTensor of vision indices to KEEP, computed at prefill. Global top-N2
+    by default; if qs.per_view, keep top qs.keep_pv WITHIN each view (vision tokens are grouped
+    per view) -> per-view budget, matching the single-view baselines."""
     vis = qs.vis_pos.to(hidden_states.device)
     if qs.signal == "attn":
         a = attn_K_minus_1.mean(dim=1).squeeze(0)            # (S,S) avg over heads, batch=1
@@ -46,6 +51,11 @@ def _select_keep(qs, hidden_states, attn_K_minus_1):
         q_bar = F.normalize(h[qp].float().mean(0, keepdim=True), dim=-1)   # (1, D)
         v = F.normalize(h[vis].float(), dim=-1)              # (N1, D)
         score = (v @ q_bar.t()).squeeze(1)                   # (N1,)
+    if getattr(qs, "per_view", False) and qs.n_views:
+        nv = int(qs.n_views); ntok = vis.numel() // nv; kp = min(int(qs.keep_pv), ntok)
+        loc = score.view(nv, ntok).topk(kp, dim=1).indices   # (nv, kp) within-view ranking
+        off = (torch.arange(nv, device=vis.device) * ntok).unsqueeze(1)
+        return vis[(loc + off).reshape(-1)].sort().values
     n2 = min(int(qs.N2), vis.numel())
     top = torch.topk(score, n2).indices
     return vis[top].sort().values

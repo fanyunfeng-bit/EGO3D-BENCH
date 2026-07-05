@@ -182,11 +182,14 @@ def run_category(model, processor, items, category, args, compressor, capture, t
         kept_visual = int(keep_mask_vis.sum())
         seq_len = int(keep_full.sum())
 
-        if fastv_ctrl is not None:      # FastV: prune in-LLM at layer K by last-token attention
+        if fastv_ctrl is not None:      # FastV: prune in-LLM at layer K by last-token attention (per-view)
             n_vis = int((inputs["input_ids"][0] == image_token_id).sum())
             fastv_ctrl.vis_pos = torch.where(keep_full)[0][
                 (inputs["input_ids"][0][keep_full] == image_token_id)]   # visual positions in red seq
-            fastv_ctrl.N2 = max(1, round(args.keep_ratio * n_vis))
+            n_views = inputs["image_grid_thw"].shape[0]
+            fastv_ctrl.n_views = n_views
+            fastv_ctrl.keep_pv = max(1, round(args.keep_ratio * (n_vis // n_views)))   # per-view budget
+            fastv_ctrl.N2 = fastv_ctrl.keep_pv * n_views
             fastv_ctrl.last_q = red_embeds.shape[1] - 1
             fastv_ctrl.kept = None
             fastv_ctrl.active = True
