@@ -220,7 +220,55 @@ python scripts/cvsp_curve.py --methods cvsp --rho_a 0.2 --rho_s 0.4 --ratios 0.1
 
 ---
 
-## 12. 引用 / 相关文件
+## 12. 实测结果与调整方向（2026-07-05）
+
+### 12.1 16 帧 no-think 全量对比（Qwen2.5-VL-7B）
+设置:16 帧、no-think(`Output only the final answer … Do not include any reasoning.`,
+`max_new_tokens=16`、robust MC 打分 `\b[a-d]\b`)、SCMPruner **20/40/40 + xview on**、
+FastV **per-view**、5 个跨视角关系任务全量(rel_dir easy/med/hard、route_planning、
+rel_distance,1872 题)。汇总(mean Δ,15 格 = 5 任务 × keep{25,10,5}):
+
+| SCM vs | keep25 | keep10 | keep5 | **overall** |
+|---|---|---|---|---|
+| random | +0.013 | −0.002 | −0.012 | **−0.000** |
+| VisPruner | +0.009 | −0.005 | −0.010 | **−0.002** |
+| FastV(per-view) | +0.023 | +0.007 | +0.003 | **+0.011** |
+| baseline(全 token) | −0.012 | −0.016 | −0.031 | **−0.020** |
+
+最优方法计数(15 格):baseline **6.5** · FastV 3 · VisPruner 2.5 · random 2 · **SCMPruner 1**。
+
+**结论(诚实):**
+1. **SCM ≈ random ≈ VisPruner,击败 FastV(+0.011)。** 20/40/40 修好了 8 帧 with-think 版本
+   "keep10 全面输 random(−0.021)"的退化 → 现在打平。
+2. **压缩本身就伤精度**:baseline 总体最优(MEAN 0.384 vs 压缩方法 0.35–0.37),在 rel_distance /
+   rel_dir_hard 上大幅领先,没有任何 informed selector 追回。
+3. **反直觉**:SCM 对 random 的优势 **keep25 最大(+0.013)、keep5 反转 −0.012** —— 与"极端压缩
+   selection 才重要"相反;噪声锚点在预算充裕时略帮、预算极小时反害。
+4. SCM 唯一相对强项:压缩方法里在 **rel_distance** 三个 ratio 全部最好。
+5. **确认项目主线:纯特征 query-agnostic 选择打平、不胜 random。** 原始结果
+   `logs/Qwen2.5-VL-7B-{method}-keep{NN}-vsibench/{task}.result.json`。
+
+### 12.2 xview 消融（进行中）
+真实 Qwen 特征上 xview 开/关只改变 **keep25 6% / keep10 3% / keep5 0%** 的保留 token(2 样本实测)
+→ 预计 ACC 差在噪声内。全量 xview-off 跑在 `Qwen2.5-VL-7B-noxv-*`(`--scm_xview 0`)。
+
+### 12.3 调整方向（2026-07-05,用户判定优先级）
+**有潜力(优先推进):**
+- **ρ_a/ρ_s**(桶预算)—— 已 1/3→20/40/40;继续试 **ρ_a=0**(诊断:锚点到底有没有用)/ 更小 ρ_a。
+- **anc_m**(sharpness 门槛)—— 项目实测最敏感的旋钮;暴露成 CLI 扫 {0.08,0.12,0.15,0.20}。
+- **xview** 开/关 —— 正在消融。
+- **query-aware(两阶段 / GeoScaffold)** —— **唯一被判断"可能真赢过 random"的路**;纯特征
+  query-agnostic 的天花板 = 平 random。
+
+**需进一步研究(暂缓):**
+- **coverage → correspondence-cluster / 空间感知**(§10 的 v2 扩展)—— 有潜力,但要先把聚类/空间
+  代理的可靠性研究清楚(对应关系噪声大)再上。
+
+**结构性可选(记录,待触发):**
+- **per-view floor**(每视角保底)—— 治"全局选饿死视角";改动小,建议优先试。
+- 桶2 去重改 within-view;`anc_tau` 与 `τ_dup` 解耦;`match_idx` 用 mutual-NN / 多匹配。
+
+## 13. 引用 / 相关文件
 
 - `Notes/Anchor-Validation.md` §9–11 —— anchor 存在性(无去重 oracle)+ 纯特征 `support×sharpness` 验证 + $\tau/m$ 分布。
 - `Notes/CVSP-Method.md` —— a20s40 / block-cvsp 母方法。
