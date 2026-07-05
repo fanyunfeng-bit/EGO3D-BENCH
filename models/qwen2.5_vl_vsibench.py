@@ -160,7 +160,8 @@ def run_category(model, processor, items, category, args, compressor, capture, t
                 n_views = inputs["image_grid_thw"].shape[0]
                 n_tok = image_embeds.shape[0] // n_views      # 256 (448x448 frames)
                 keep = scm.scmpruner_keep_indices(image_embeds, importance, n_views, n_tok, args.keep_ratio,
-                                                  rho_a=args.scm_rho_a, rho_s=args.scm_rho_s)
+                                                  rho_a=args.scm_rho_a, rho_s=args.scm_rho_s,
+                                                  xview=bool(args.scm_xview))
                 keep_mask_vis = torch.zeros(image_embeds.shape[0], dtype=torch.bool, device=image_embeds.device)
                 keep_mask_vis[torch.tensor(keep, device=image_embeds.device)] = True
             elif compressor is None:                          # baseline / fastv: keep all pre-LLM
@@ -239,6 +240,7 @@ def main():
     ap.add_argument("--fastv_k", type=int, default=2, help="FastV: prune layer K (default 2)")
     ap.add_argument("--scm_rho_a", type=float, default=0.2, help="SCMPruner anchor budget frac (a20s40=0.2)")
     ap.add_argument("--scm_rho_s", type=float, default=0.4, help="SCMPruner saliency budget frac (a20s40=0.4)")
+    ap.add_argument("--scm_xview", type=int, default=1, help="SCMPruner: 1=xview coverage propagation on, 0=off")
     ap.add_argument("--attn", default="flash_attention_2")
     ap.add_argument("--limit", type=int, default=None)
     args = ap.parse_args()

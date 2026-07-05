@@ -11,12 +11,13 @@ import torch.nn.functional as F
 
 
 def scmpruner_keep_indices(feats2d, saliency, n_views, n_tok, keep_ratio,
-                           anc_tau=0.6, anc_m=0.12, rho_a=1.0 / 3, rho_s=1.0 / 3):
+                           anc_tau=0.6, anc_m=0.12, rho_a=1.0 / 3, rho_s=1.0 / 3, xview=True):
     """End-to-end SCMPruner selection for one sample, shared by both VSI runners.
     feats2d   : (M, C) concatenated per-view visual features (M = n_views*n_tok).
     saliency  : (M,) per-token foreground cue (InternViT CLS attention / Qwen attn-received).
-    Returns a sorted python list of kept GLOBAL token indices (length keep_pv*n_views),
-    with xview coverage propagation ON (match_idx passed). Deterministic."""
+    xview     : if False, disable ONLY the cross-view coverage propagation (coverage bucket
+                becomes plain feature facility-location); anchor + saliency dedup unchanged.
+    Returns a sorted python list of kept GLOBAL token indices (length keep_pv*n_views). Deterministic."""
     Fn = F.normalize(feats2d.float(), dim=-1)
     G = Fn @ Fn.t()
     view_id = torch.arange(feats2d.shape[0], device=feats2d.device) // n_tok
@@ -24,7 +25,8 @@ def scmpruner_keep_indices(feats2d, saliency, n_views, n_tok, keep_ratio,
     keep_pv = max(1, round(n_tok * keep_ratio))
     K = keep_pv * n_views
     gi = sel_scmpruner(G, a, saliency, support, view_id, n_views, n_tok, K,
-                       rho_a=rho_a, rho_s=rho_s, anc_tau=anc_tau, match_idx=match_idx)
+                       rho_a=rho_a, rho_s=rho_s, anc_tau=anc_tau,
+                       match_idx=(match_idx if xview else None))
     return sorted(gi)
 
 

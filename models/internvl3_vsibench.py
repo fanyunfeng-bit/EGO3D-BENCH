@@ -82,7 +82,7 @@ def build_prompt(model, tokenizer, question, num_patches_list, num_image_token):
 
 
 @torch.no_grad()
-def scmpruner_features(model, pixel_values, capture, keep_ratio, rho_a=0.2, rho_s=0.4):
+def scmpruner_features(model, pixel_values, capture, keep_ratio, rho_a=0.2, rho_s=0.4, xview=True):
     """Cross-view SCMPruner selection for InternVL (VSI: 1 tile/frame -> n_views=n_frames,
     n_tok=256). extract_feature populates capture.cls_attn; we aggregate it to the LLM-token
     grid (as compute_visual_features does), run the shared selector, and return the kept
@@ -95,7 +95,7 @@ def scmpruner_features(model, pixel_values, capture, keep_ratio, rho_a=0.2, rho_
     imp = model.pixel_shuffle(imp, scale_factor=model.downsample_ratio)
     imp = imp.mean(dim=-1).reshape(n_views, -1).reshape(-1).float()   # (M,)
     keep = scm.scmpruner_keep_indices(vit.reshape(-1, C), imp, n_views, n_tok, keep_ratio,
-                                      rho_a=rho_a, rho_s=rho_s)
+                                      rho_a=rho_a, rho_s=rho_s, xview=xview)
     keep_t = torch.tensor(sorted(keep), device=vit.device)
     counts, feats = [], []
     for v in range(n_views):
@@ -163,7 +163,8 @@ def run_category(model, tokenizer, items, category, args, compressor, capture, t
             if args.compress_method == "scmpruner":
                 visual_features, img_tokens = scmpruner_features(
                     model, pixel_values, capture, args.keep_ratio,
-                    rho_a=args.scm_rho_a, rho_s=args.scm_rho_s)       # img_tokens = per-view counts
+                    rho_a=args.scm_rho_a, rho_s=args.scm_rho_s,
+                    xview=bool(args.scm_xview))                       # img_tokens = per-view counts
             else:
                 visual_features, img_tokens = compute_visual_features(
                     model, pixel_values, compressor, args.keep_ratio, capture,
@@ -230,6 +231,7 @@ def main():
     ap.add_argument("--fastv_k", type=int, default=2, help="FastV: prune layer K (default 2)")
     ap.add_argument("--scm_rho_a", type=float, default=0.2, help="SCMPruner anchor budget frac (a20s40=0.2)")
     ap.add_argument("--scm_rho_s", type=float, default=0.4, help="SCMPruner saliency budget frac (a20s40=0.4)")
+    ap.add_argument("--scm_xview", type=int, default=1, help="SCMPruner: 1=xview coverage propagation on, 0=off")
     ap.add_argument("--limit", type=int, default=None, help="first N items per category (smoke)")
     args = ap.parse_args()
 
