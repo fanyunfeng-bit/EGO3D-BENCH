@@ -18,6 +18,7 @@ budget matches the InternVL3 VSI run. Metrics: Accuracy (MC) / MRA (numeric).
 import argparse
 import json
 import os
+import re
 import sys
 
 import torch
@@ -63,9 +64,9 @@ def build_messages(item, frame_paths):
         for opt in item["options"]:
             q += "\n" + opt
     if item["question_type"] in NA_TYPES:
-        q += "\nOutput the thinking process in <think> </think> and final answer (number only) in <answer> </answer> tags."
+        q += "\nOutput only the final answer (number only) in <answer> </answer> tags. Do not include any reasoning."
     else:
-        q += "\nOutput the thinking process in <think> </think> and final answer (only the letter of the choice) in <answer> </answer> tags."
+        q += "\nOutput only the final answer (the letter of the choice) in <answer> </answer> tags. Do not include any reasoning."
     content.append({"type": "text", "text": q})
     return [{"role": "user", "content": content}]
 
@@ -75,6 +76,17 @@ def mra(pred, gt):
         return 0.0
     rel = abs(float(pred) - gt) / abs(gt)
     return sum(1.0 for th in MRA_THRESHOLDS if rel < 1 - th) / len(MRA_THRESHOLDS)
+
+
+def mc_answer_letter(pred):
+    """Robustly pull the A-D choice letter from a model answer. No-think outputs often
+    drop the <answer> tags or add punctuation (e.g. 'B.'), which an exact-match scorer
+    would miss; \\b[a-d]\\b picks the standalone letter and ignores letters inside words
+    ('the answer is c.' -> 'c', not the 'a' in 'answer'). Falls back to the raw tag-
+    extracted string. Backward-compatible with a clean '<answer>c</answer>' -> 'c'."""
+    s = extract_number_from_answer_tag_mult_choice(pred)   # tag-aware + lowercased
+    m = re.search(r"\b([a-d])\b", s)
+    return m.group(1) if m else s
 
 
 def compute_metric(save_path, qtype):
@@ -89,13 +101,12 @@ def compute_metric(save_path, qtype):
             except ValueError:
                 pass
         return "MRA", (sum(vals) / len(vals) if vals else None), len(rows)
-    correct = sum(1 for r in rows
-                  if extract_number_from_answer_tag_mult_choice(r["Processed_Pred"]) == r["GT"].lower())
+    correct = sum(1 for r in rows if mc_answer_letter(r["Processed_Pred"]) == r["GT"].lower())
     return "ACC", correct / len(rows), len(rows)
 
 
 @torch.no_grad()
-def greedy_decode(model, inputs_embeds, position_ids, eos_ids, max_new_tokens=1024):
+def greedy_decode(model, inputs_embeds, position_ids, eos_ids, max_new_tokens=16):
     """Manual greedy decode over a (possibly pruned) prefill with M-RoPE positions."""
     L = inputs_embeds.shape[1]
     out = model.model(inputs_embeds=inputs_embeds, position_ids=position_ids,
