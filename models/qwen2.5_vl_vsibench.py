@@ -161,6 +161,7 @@ def run_category(model, processor, items, category, args, compressor, capture, t
                 n_tok = image_embeds.shape[0] // n_views      # 256 (448x448 frames)
                 keep = scm.scmpruner_keep_indices(image_embeds, importance, n_views, n_tok, args.keep_ratio,
                                                   rho_a=args.scm_rho_a, rho_s=args.scm_rho_s,
+                                                  anc_tau=args.anc_tau, anc_m=args.anc_m,
                                                   xview=bool(args.scm_xview))
                 keep_mask_vis = torch.zeros(image_embeds.shape[0], dtype=torch.bool, device=image_embeds.device)
                 keep_mask_vis[torch.tensor(keep, device=image_embeds.device)] = True
@@ -240,6 +241,8 @@ def main():
     ap.add_argument("--fastv_k", type=int, default=2, help="FastV: prune layer K (default 2)")
     ap.add_argument("--scm_rho_a", type=float, default=0.2, help="SCMPruner anchor budget frac (a20s40=0.2)")
     ap.add_argument("--scm_rho_s", type=float, default=0.4, help="SCMPruner saliency budget frac (a20s40=0.4)")
+    ap.add_argument("--anc_m", type=float, default=0.12, help="SCMPruner Lowe-margin/sharpness gate (primary knob)")
+    ap.add_argument("--anc_tau", type=float, default=0.6, help="SCMPruner cross-view cosine gate for a 'sharp' match")
     ap.add_argument("--scm_xview", type=int, default=1, help="SCMPruner: 1=xview coverage propagation on, 0=off")
     ap.add_argument("--attn", default="flash_attention_2")
     ap.add_argument("--limit", type=int, default=None)
@@ -269,6 +272,9 @@ def main():
         or method == "scmpruner"                              # scmpruner needs ViT saliency; fastv doesn't
     capture = QwenAttentionCapture(model) if need_capture else None
     tag = "baseline" if method == "none" else f"{method}-keep{int(round(args.keep_ratio*100))}"
+    if method == "scmpruner":                                # auto-encode non-default knobs so a
+        tag += scm.scmpruner_tag_suffix(args.scm_rho_a, args.scm_rho_s,   # sweep never collides / corrupts resume
+                                        args.anc_tau, args.anc_m, bool(args.scm_xview))
 
     fastv_ctrl = None
     if method == "fastv":

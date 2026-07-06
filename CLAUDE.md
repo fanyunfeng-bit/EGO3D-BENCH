@@ -132,6 +132,8 @@ query-agnostic line was found to not beat random (verdict below), the active dir
 query-agnostic cross-view 3D scaffold pre-LLM, then a query-conditional coarse-to-fine refine
 *inside* the LLM. The `Notes/` files are the design + empirical archive — **read these before
 proposing method changes** (`CVSP-Method.md` = current spec §12 single-stage / §13 two-stage;
+`SCMPruner-Method.md` = the pure-feature multi-view pruner spec derived from the anchor finding
+(anchor `support×sharpness` no-dedup + margin-aware saliency dedup + facility-location coverage);
 `GeoScaffold-Story.md` = the pivot; `Visual-Compression.md` + `CVSP-Story.md` = empirical log;
 `Anchor-Validation.md` = the open track to validate whether cross-view "load-bearing" tokens
 exist / where the model binds across views, via clean probes + a geometry oracle instead of the
@@ -144,12 +146,18 @@ method's exact command, params, output path, and scoring) — keep it and this s
 **Two harnesses — and the headline methods live in only one of them.** This is the most common
 trip-up:
 - **Harness A** — `models/internvl3_compress.py` (Ego3D), `models/internvl3_vsibench.py` and
-  `models/qwen2.5_vl_vsibench.py` (VSI). Selected with `--compress_method {none|vispruner|random}`,
-  limited to the **`compressors/` registry**. This is the **efficiency + simple-baseline** harness:
+  `models/qwen2.5_vl_vsibench.py` (VSI). Selected with `--compress_method`. `internvl3_compress.py`
+  is **registry-only** (`none|vispruner|random`); the two **VSI runners additionally accept
+  `scmpruner` and `fastv`** (a `SPECIAL_METHODS` set handled *outside* the registry — `scmpruner`
+  calls `compressors/scm.py::scmpruner_keep_indices` pre-LLM, `fastv` installs an in-LLM layer-K
+  pruner from `compressors/fastv.py`). This is the **efficiency + simple-baseline** harness:
   it writes `*.result.json` with FLOPs/KV/mem/time. Visual features are computed *outside* the
   timed region; the timed region is the LLM `generate` over the reduced sequence (`encode_ms`
-  logged separately). Metered by `utils/efficiency.py` (VisPruner/FastV convention).
-- **Harness B** — `scripts/cvsp_curve.py` (hosts `cvsp`=a20s40, `block_cvsp`, plus baselines) and
+  logged separately). Metered by `utils/efficiency.py` (VisPruner/FastV convention). NB: the VSI
+  runners use a **no-`<think>` prompt + `max_new_tokens=16` + robust `\b[a-d]\b` MC scoring**
+  (commit `c62da1b`), diverging from the benchmark loop's `max_new_tokens=1024`.
+- **Harness B** — `scripts/cvsp_curve.py` (hosts `cvsp`=a20s40, `block_cvsp`, `scmpruner`, plus
+  baselines) and
   `scripts/qstage_curve.py` (the **two-stage query-aware** method). Selected with `--methods` /
   `--signal`, **not** `--compress_method`. Writes **accuracy-only** JSONL to `logs/cvsp/`. The
   headline methods (a20s40, block-cvsp, two-stage) exist **only here** — they are not in the
@@ -162,7 +170,12 @@ image, at the granularity that actually enters the LLM (InternVL3: 256 post-pixe
 tokens/tile). Registry implementations: `vispruner` (faithful port: top-k by ViT CLS→patch
 attention + ToMe diverse tokens) and `random` (uniform, `needs_importance=False`). Register new
 per-image selectors in `compressors/__init__.py`; `build_compressor(name)` selects one (`none` =
-baseline). `compressors/qstage_llm.py` is **not** a `TokenCompressor` — it is the in-LLM two-stage
+baseline). **Three modules in `compressors/` are deliberately *not* in the registry** (they are
+cross-view or in-LLM, not per-image `TokenCompressor`s): `scm.py` = the **SCMPruner core**
+(`scmpruner_keep_indices` — the single source of truth for the `support×sharpness` anchor +
+three-bucket selector, imported by BOTH `cvsp_curve.py` and the two VSI runners so InternVL3 and
+Qwen prune byte-identically); `fastv.py` = **FastV** (per-view in-LLM prune at layer K by
+last-token attention, one class per model family); and `qstage_llm.py` = the in-LLM two-stage
 controller (`QStage` + `make_qstage_forward` patch InternVL3's `Qwen2Model.forward` to prune
 vision tokens at decoder layer K with PESP position handling) used by `qstage_curve.py`.
 **Model-specific plumbing lives in the adapters**, not the compressor: `internvl_adapter.py`
@@ -173,13 +186,27 @@ attention + a 2×2 merger → patches the mid full-attention block, uses attenti
 cue, un-permutes via `window_index`).
 
 **Key conventions specific to this layer:**
-- Harness A: `--compress_method {none|vispruner|random}` + `--keep_ratio` (e.g. `0.1` = keep 10% =
-  "keep10", the 90%-pruned setting). Log dirs: `logs/<model>-<method>-keep<NN>[-vsibench]/`.
-- Harness B: `--ratios` (comma-sep keep fractions) + `--methods`/`--signal`; for `cvsp`/`block_cvsp`
-  **always pass the same `--tag`** when re-running or you won't find/score the file. Output:
-  `logs/cvsp/<ds>.<task>.keep<pct>.<method><tag>.jsonl`. `--methods cvsp` = a20s40 (ρ_a=0.2/ρ_s=0.4,
-  3-bucket anchor/saliency/coverage); `qstage_curve.py --signal input_cos --r 7` = the headline
-  two-stage. `utils/aggregate_compress.py` collates Harness-A baseline-vs-compressed result jsons.
+- Harness A: `--compress_method {none|vispruner|random}` (VSI runners add `scmpruner|fastv`) +
+  `--keep_ratio` (e.g. `0.1` = keep 10% = "keep10", the 90%-pruned setting). Log dirs:
+  `logs/<model>-<method>-keep<NN>[-vsibench]/`.
+- Harness B: `--ratios` (comma-sep keep fractions) + `--methods`/`--signal`; for the **`TAGGED`
+  methods (`cvsp`, `block_cvsp`, `scmpruner`) always pass the same `--tag`** when re-running or you
+  won't find/score the file. Output: `logs/cvsp/<ds>.<task>.keep<pct>.<method><tag>.jsonl`.
+  `--methods cvsp` = a20s40 (ρ_a=0.2/ρ_s=0.4, 3-bucket anchor/saliency/coverage);
+  `--methods scmpruner` = **SCMPruner** (pure-feature `support×sharpness` anchor, no cross-view
+  dedup; margin-aware saliency dedup; facility-location coverage). Its **primary knob is `--anc_m`**
+  (Lowe-margin / sharpness gate, default 0.12 — the project's most sensitive knob); secondary
+  `--anc_tau` (0.6, "clear match" cosine gate), `--scm_rho_a/--scm_rho_s` (0.2/0.4 = the canonical
+  **20/40/40** split), and `--scm_xview` (cross-view coverage propagation, default on — **ablated
+  to a no-op**). **All five knobs are exposed identically (same names + defaults) in all three
+  harnesses** — `cvsp_curve.py` and both VSI runners — routing into the one shared selector in
+  `compressors/scm.py` (`--rho_a/--rho_s` in `cvsp_curve.py` stay reserved for `cvsp`, not
+  `scmpruner`). The **VSI runners auto-encode any *non-default* knob into the log-dir name** via
+  `scm.scmpruner_tag_suffix` (e.g. `…-scmpruner-keep10-m08-vsibench`, `…-noxv`) so a sweep never
+  collides / corrupts resume, and the default config keeps the bare `…-scmpruner-keep<NN>-vsibench`
+  dir; `cvsp_curve.py` keeps its manual `--tag`. Spec: `Notes/SCMPruner-Method.md` (§6's "ρ=1/3
+  fixed" is superseded by §12.3's move to 20/40/40). `qstage_curve.py --signal input_cos --r 7` =
+  the headline two-stage. `utils/aggregate_compress.py` collates Harness-A results.
 - **Determinism is mandatory**: `random` seeds per view from `SeedSequence([base_seed, sample_id,
   view])`, so a method reproduces identical pruning across reruns and is resume-safe. Resume is by
   JSONL line count, and sample order is deterministic, so an `--n 200` file is a true prefix of the
@@ -211,15 +238,25 @@ standalone study, resumable per-(task,method) JSONL, run under the `ego3d` env. 
   The many `scripts/run_*.sh` are thin wrappers that chain these curve/sweep/decision steps —
   `docs/算法运行指南.md` is authoritative for which to run.
 
-**Current empirical verdict (2026-06-24, anchor line 2026-07-01; authoritative source =
-`Notes/Visual-Compression.md` §实测发现 D–J + §O full-data table, `Notes/CVSP-Story.md` 实验现状,
-and `Notes/Anchor-Validation.md` §9–11):** dropping 90% of visual
+**Current empirical verdict (2026-06-24, anchor line 2026-07-01, SCMPruner line 2026-07-05;
+authoritative source = `Notes/Visual-Compression.md` §实测发现 D–J + §O full-data table,
+`Notes/CVSP-Story.md` 实验现状, `Notes/Anchor-Validation.md` §9–11, and
+`Notes/SCMPruner-Method.md` §12):** dropping 90% of visual
 tokens barely hurts Ego3D ACC, and the vision ablation shows the visual signal is small and
 redundant while the model leans heavily on language priors. Across budgets and both datasets, **no
 informed selector reliably beats stratified random — and this now extends to the query-aware
 methods, not just the query-agnostic ones:**
 - Query-agnostic line (saliency / diversity / leverage / anchor / log-det engine, and the tuned
   single-stage **a20s40**): overall ≈ or < random.
+- **SCMPruner (`Notes/SCMPruner-Method.md` §12, 2026-07-05, Qwen2.5-VL 16-frame no-think VSI, 5
+  cross-view relational tasks):** the pure-feature `support×sharpness` pruner lands **SCM ≈ random
+  ≈ VisPruner** (per-method mean ACC within <0.3pp; VisPruner marginally best) and only clearly
+  **beats FastV (+0.011)**. The 20/40/40 ρ split fixed a20s40's earlier keep10 regression (which
+  lost to random by −0.021) → now a statistical tie. Two counter-intuitive notes: **compression
+  itself hurts** (full-token baseline is best overall, ~0.384 vs 0.35–0.37), and SCM's edge over
+  random is *largest at keep25 (+0.013) and reverses at keep5 (−0.012)* — opposite to the
+  "selection only matters at extreme compression" thesis. The **`--scm_xview` cross-view coverage
+  propagation ablated to a no-op** (mean Δ 0.09pp) — removed from the "has potential" list.
 - **Anchor existence — refined 2026-07-01 (`Notes/Anchor-Validation.md` §9–11).** The flat "anchor
   doesn't help" is too strong: a *no-dedup* geometric oracle (VGGT cross-view co-visibility × surface
   variation, injected as `ρ_a` anchors + rest per-view-random) gives a **dose-dependent +~0.02 ACC on

@@ -10,8 +10,27 @@ import torch
 import torch.nn.functional as F
 
 
+def scmpruner_tag_suffix(rho_a=0.2, rho_s=0.4, anc_tau=0.6, anc_m=0.12, xview=True):
+    """Compact, collision-free filename suffix encoding ONLY the SCMPruner knobs that
+    differ from the canonical default (rho 20/40/40, anc_tau 0.6, anc_m 0.12, xview on).
+    The default config maps to '' so an existing logs/<model>-scmpruner-keep<NN>-vsibench
+    dir is reused/resumed; a sweep gets a distinct dir automatically (e.g. '-m08',
+    '-a33s33', '-t50', '-noxv') instead of silently appending to the wrong file. Shared by
+    both VSI runners so their variant naming is byte-identical."""
+    s = ""
+    if (round(rho_a, 3), round(rho_s, 3)) != (0.2, 0.4):
+        s += f"-a{round(rho_a * 100)}s{round(rho_s * 100)}"
+    if round(anc_m, 3) != 0.12:
+        s += f"-m{round(anc_m * 100):02d}"
+    if round(anc_tau, 3) != 0.6:
+        s += f"-t{round(anc_tau * 100)}"
+    if not xview:
+        s += "-noxv"
+    return s
+
+
 def scmpruner_keep_indices(feats2d, saliency, n_views, n_tok, keep_ratio,
-                           anc_tau=0.6, anc_m=0.12, rho_a=1.0 / 3, rho_s=1.0 / 3, xview=True):
+                           anc_tau=0.6, anc_m=0.12, rho_a=0.2, rho_s=0.4, xview=True):
     """End-to-end SCMPruner selection for one sample, shared by both VSI runners.
     feats2d   : (M, C) concatenated per-view visual features (M = n_views*n_tok).
     saliency  : (M,) per-token foreground cue (InternViT CLS attention / Qwen attn-received).

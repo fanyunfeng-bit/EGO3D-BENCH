@@ -304,6 +304,8 @@ def main():
     ap.add_argument("--tau", type=float, default=0.85)      # cross-view dedup threshold (saliency + a20s40 anchor)
     ap.add_argument("--anc_tau", type=float, default=0.6)   # scmpruner: cross-view cosine gate for a 'sharp' match
     ap.add_argument("--anc_m", type=float, default=0.12)    # scmpruner: Lowe-margin gate for a 'sharp' match
+    ap.add_argument("--scm_rho_a", type=float, default=0.2) # scmpruner anchor budget frac (canonical 20/40/40); != cvsp's --rho_a
+    ap.add_argument("--scm_rho_s", type=float, default=0.4) # scmpruner saliency budget frac (rho_c = 1 - scm_rho_a - scm_rho_s)
     ap.add_argument("--scm_xview", type=int, default=1)     # scmpruner: 1=xview coverage propagation on (§10), 0=off (ablation)
     ap.add_argument("--phi", type=int, default=1)
     ap.add_argument("--kappa", type=float, default=0.0)     # ★2 anchor reach: pool=top ceil(kappa*B_a) by L (0 = off)
@@ -361,10 +363,11 @@ def main():
                 # SCMPruner (Notes/SCMPruner-Method.md): anchor = support x sharpness, NO
                 # dedup; saliency dedup is margin-aware (fuzzy-only, threshold = anc_tau);
                 # coverage = facility-location + xview propagation (§10, on by default).
-                # rho_a=rho_s=1/3 fixed; anc_m is the one knob.
+                # Knobs: --scm_rho_a/--scm_rho_s (canonical 20/40/40), --anc_m (primary),
+                # --anc_tau, --scm_xview. Same flags/defaults as the VSI runners.
                 a, support, match_idx = anchor_scores(G, view_id, n_views, args.anc_tau, args.anc_m)
                 gi = sel_scmpruner(G, a, imp, support, view_id, n_views, n_tok, K,
-                                   rho_a=1.0 / 3, rho_s=1.0 / 3, anc_tau=args.anc_tau,
+                                   rho_a=args.scm_rho_a, rho_s=args.scm_rho_s, anc_tau=args.anc_tau,
                                    match_idx=(match_idx if args.scm_xview else None))
             else:
                 raise ValueError(method)
