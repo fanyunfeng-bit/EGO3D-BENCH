@@ -206,7 +206,10 @@ cue, un-permutes via `window_index`).
   collides / corrupts resume, and the default config keeps the bare `…-scmpruner-keep<NN>-vsibench`
   dir; `cvsp_curve.py` keeps its manual `--tag`. Spec: `Notes/SCMPruner-Method.md` (§6's "ρ=1/3
   fixed" is superseded by §12.3's move to 20/40/40). `qstage_curve.py --signal input_cos --r 7` =
-  the headline two-stage. `utils/aggregate_compress.py` collates Harness-A results.
+  the headline two-stage. `utils/aggregate_compress.py` collates Harness-A results. A
+  query-aware two-stage variant `scmpruner_qa` (SCMPruner stage-1 → in-LLM layer-K query prune,
+  no anchor protection; `--scm_r/--scm_K/--scm_sig/--scm_softweight`) runs on both VSI runners —
+  spec `docs/superpowers/specs/2026-07-06-query-aware-scmpruner-design.md`.
 - **Determinism is mandatory**: `random` seeds per view from `SeedSequence([base_seed, sample_id,
   view])`, so a method reproduces identical pruning across reruns and is resume-safe. Resume is by
   JSONL line count, and sample order is deterministic, so an `--n 200` file is a true prefix of the
