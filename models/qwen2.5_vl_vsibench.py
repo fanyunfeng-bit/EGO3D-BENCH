@@ -318,6 +318,8 @@ def main():
     if method == "scmpruner_qa":
         from compressors.fastv import QwenFastV, make_fastv_forward_qwen
         tag += scm.scmpruner_qa_tag_suffix(args.scm_r, args.scm_K, args.scm_sig, args.scm_softweight)
+        tag += scm.scmpruner_tag_suffix(args.scm_rho_a, args.scm_rho_s,   # stage-1 knobs too, else a
+                                        args.anc_tau, args.anc_m, bool(args.scm_xview))  # sweep corrupts resume
         qa_ctrl = QwenFastV(K=args.scm_K)
         qa_ctrl.signal = args.scm_sig; qa_ctrl.query_reduce = "mean"; qa_ctrl.per_view = False
         make_fastv_forward_qwen(model.model, qa_ctrl)

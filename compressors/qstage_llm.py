@@ -16,7 +16,6 @@ indices), then reused on every later forward so a custom greedy decode loop with
 prunes the SAME vision tokens each step.
 """
 import torch
-import torch.nn.functional as F
 from transformers.modeling_outputs import BaseModelOutputWithPast
 
 

@@ -8,6 +8,10 @@ dropping the rest for layers K..L-1 (and their KV cache). Default K=2 (paper).
 InternVL3 (LM = Qwen2Model, 2D RoPE): reuses the qstage in-LLM patch (`compressors/qstage_llm`)
 with signal='attn' — the identical mechanism (prune at layer K by last-token attention, PESP
 positions). Qwen2.5-VL (M-RoPE) gets its own patch in `make_fastv_forward_qwen` below.
+
+The Qwen patch (`make_fastv_forward_qwen`) also supports a `cosine` signal (via
+`scm.cosine_relevance`) and `query_reduce="mean"`, gated behind non-default args and used by
+the two-stage `scmpruner_qa` method's in-LLM stage-2 prune (FastV's own default path is unchanged).
 """
 import torch
 import torch.nn.functional as F

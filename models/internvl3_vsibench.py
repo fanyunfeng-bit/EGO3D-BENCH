@@ -305,6 +305,8 @@ def main():
     qs = None
     if method == "scmpruner_qa":
         tag += scm.scmpruner_qa_tag_suffix(args.scm_r, args.scm_K, args.scm_sig, args.scm_softweight)
+        tag += scm.scmpruner_tag_suffix(args.scm_rho_a, args.scm_rho_s,   # stage-1 knobs too, else a
+                                        args.anc_tau, args.anc_m, bool(args.scm_xview))  # sweep corrupts resume
         qs = QStage(K=args.scm_K, signal=args.scm_sig)
         qs.query_reduce = "mean"; qs.per_view = False
         model.language_model.model._qs = qs
