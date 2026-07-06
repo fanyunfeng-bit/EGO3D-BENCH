@@ -237,6 +237,12 @@ rel_distance,1872 题)。汇总(mean Δ,15 格 = 5 任务 × keep{25,10,5}):
 
 最优方法计数(15 格):baseline **6.5** · FastV 3 · VisPruner 2.5 · random 2 · **SCMPruner 1**。
 
+**每方法 15 格平均 ACC(排名):** baseline **0.384** > VisPruner 0.3667 > random 0.3646 ≈
+SCMPruner(xview-on) 0.3645 > SCMPruner(xview-off) 0.3636 > FastV(per-view) 0.3535。
+→ 四个"留 token"压缩方法**统计打平**(差 <0.3pp),**VisPruner 略微最好**,SCM 不胜 random/VisPruner;
+FastV 最差;baseline 明显最好。每 ratio compressor-MEAN:keep25 SCM 0.372 领先 > keep10 打平
+(visp 0.373) > keep5 SCM 0.354 落后 random 0.365(反直觉 pattern)。
+
 **结论(诚实):**
 1. **SCM ≈ random ≈ VisPruner,击败 FastV(+0.011)。** 20/40/40 修好了 8 帧 with-think 版本
    "keep10 全面输 random(−0.021)"的退化 → 现在打平。
@@ -244,19 +250,23 @@ rel_distance,1872 题)。汇总(mean Δ,15 格 = 5 任务 × keep{25,10,5}):
    rel_dir_hard 上大幅领先,没有任何 informed selector 追回。
 3. **反直觉**:SCM 对 random 的优势 **keep25 最大(+0.013)、keep5 反转 −0.012** —— 与"极端压缩
    selection 才重要"相反;噪声锚点在预算充裕时略帮、预算极小时反害。
-4. SCM 唯一相对强项:压缩方法里在 **rel_distance** 三个 ratio 全部最好。
+4. SCM 唯一相对强项:击败 FastV(+0.011);在 **rel_distance** 的 keep25/10 上是最好的压缩方法
+   (keep5 略低于 random)。
 5. **确认项目主线:纯特征 query-agnostic 选择打平、不胜 random。** 原始结果
    `logs/Qwen2.5-VL-7B-{method}-keep{NN}-vsibench/{task}.result.json`。
 
-### 12.2 xview 消融（进行中）
-真实 Qwen 特征上 xview 开/关只改变 **keep25 6% / keep10 3% / keep5 0%** 的保留 token(2 样本实测)
-→ 预计 ACC 差在噪声内。全量 xview-off 跑在 `Qwen2.5-VL-7B-noxv-*`(`--scm_xview 0`)。
+### 12.2 xview 消融（完成 → **no-op**）
+全量 xview on-vs-off(15 格,`Qwen2.5-VL-7B-noxv-scmpruner-*` vs `-scmpruner-*`):
+**mean Δ(off−on) = −0.0009**(0.09pp,可忽略),mean |Δ| = 0.008(随机符号噪声,相互抵消),
+OFF≥ON 在 **8/15** 格(掷硬币)。**结论:xview 既不帮也不害(在噪声内)—— 不是杠杆,可直接去掉简化方法。**
+机制:facility-location 本身已软性处理跨视角冗余,真实特征上显式传播只动了 **keep25 6% / keep10 3% /
+keep5 0%** 的 token,不足以改变 ACC。→ **从"有潜力方向"里划掉 xview**(有用的负结果)。
 
 ### 12.3 调整方向（2026-07-05,用户判定优先级）
 **有潜力(优先推进):**
 - **ρ_a/ρ_s**(桶预算)—— 已 1/3→20/40/40;继续试 **ρ_a=0**(诊断:锚点到底有没有用)/ 更小 ρ_a。
 - **anc_m**(sharpness 门槛)—— 项目实测最敏感的旋钮;暴露成 CLI 扫 {0.08,0.12,0.15,0.20}。
-- **xview** 开/关 —— 正在消融。
+- ~~**xview** 开/关~~ —— 已消融完:**no-op**(§12.2),从此列划掉。
 - **query-aware(两阶段 / GeoScaffold)** —— **唯一被判断"可能真赢过 random"的路**;纯特征
   query-agnostic 的天花板 = 平 random。
 
