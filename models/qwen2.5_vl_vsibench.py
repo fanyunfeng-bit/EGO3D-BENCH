@@ -36,7 +36,7 @@ from compressors import build_compressor, scm
 from compressors.qwen_adapter import QwenAttentionCapture, merged_importance, qwen_select_per_image
 
 # methods not in the per-image registry: cross-view SCMPruner (pre-LLM) + in-LLM FastV
-SPECIAL_METHODS = {"scmpruner", "fastv"}
+SPECIAL_METHODS = {"scmpruner", "fastv", "scmpruner_qa"}
 
 torch.manual_seed(42)
 
@@ -131,7 +131,7 @@ def greedy_decode(model, inputs_embeds, position_ids, eos_ids, max_new_tokens=16
 
 @torch.no_grad()
 def run_category(model, processor, items, category, args, compressor, capture, tag, out_dir, llm_cfg, eos_ids,
-                 fastv_ctrl=None):
+                 fastv_ctrl=None, qa_ctrl=None):
     save_path = f"{out_dir}/{category}.jsonl"
     processed = sum(1 for _ in open(save_path)) if os.path.exists(save_path) else 0
     cat_items = [it for it in items if it["question_type"] == category]
@@ -155,7 +155,25 @@ def run_category(model, processor, items, category, args, compressor, capture, t
             image_embeds = model.visual(inputs["pixel_values"].type(model.visual.dtype),
                                         grid_thw=inputs["image_grid_thw"])
             method = args.compress_method
-            if method == "scmpruner":                        # cross-view pre-LLM selection
+            N2 = None
+            if method == "scmpruner_qa":                      # stage-1: SCMPruner over-select N1
+                importance = merged_importance(model, inputs["image_grid_thw"], capture.received)
+                n_views = inputs["image_grid_thw"].shape[0]
+                n_tok = image_embeds.shape[0] // n_views
+                M = image_embeds.shape[0]
+                L = model.model.config.num_hidden_layers
+                N1, N2, _ = scm.scmpruner_qa_budgets(args.keep_ratio, M, args.scm_r, args.scm_K, L)
+                if args.scm_softweight:
+                    q_ids = processor.tokenizer(item["question"], return_tensors="pt").input_ids.to(image_embeds.device)
+                    q_emb = model.model.embed_tokens(q_ids)[0]
+                    importance = importance * scm.input_cos_relevance(image_embeds, q_emb)
+                keep = scm.scmpruner_keep_indices(image_embeds, importance, n_views, n_tok, N1 / M,
+                                                  rho_a=args.scm_rho_a, rho_s=args.scm_rho_s,
+                                                  anc_tau=args.anc_tau, anc_m=args.anc_m,
+                                                  xview=bool(args.scm_xview))
+                keep_mask_vis = torch.zeros(image_embeds.shape[0], dtype=torch.bool, device=image_embeds.device)
+                keep_mask_vis[torch.tensor(keep, device=image_embeds.device)] = True
+            elif method == "scmpruner":                        # cross-view pre-LLM selection
                 importance = merged_importance(model, inputs["image_grid_thw"], capture.received)
                 n_views = inputs["image_grid_thw"].shape[0]
                 n_tok = image_embeds.shape[0] // n_views      # 256 (448x448 frames)
@@ -196,10 +214,20 @@ def run_category(model, processor, items, category, args, compressor, capture, t
             fastv_ctrl.last_q = red_embeds.shape[1] - 1
             fastv_ctrl.kept = None
             fastv_ctrl.active = True
+        if qa_ctrl is not None:          # scmpruner_qa stage-2: in-LLM prune at layer K on the RED seq
+            red_ids = inputs["input_ids"][0][keep_full]
+            vis_pos_red = torch.where(red_ids == image_token_id)[0]
+            last_vis = int(vis_pos_red[-1].item())
+            qa_ctrl.vis_pos = vis_pos_red
+            qa_ctrl.query_pos = torch.arange(last_vis + 1, red_ids.shape[0], device=red_ids.device)
+            qa_ctrl.n_views = inputs["image_grid_thw"].shape[0]
+            qa_ctrl.N2 = N2; qa_ctrl.kept = None; qa_ctrl.active = True
         with efficiency.GpuProfile() as prof:
             gen_ids = greedy_decode(model, red_embeds, red_pos, eos_ids)
         if fastv_ctrl is not None:
             fastv_ctrl.active = False
+        if qa_ctrl is not None:
+            qa_ctrl.active = False
         response = processor.tokenizer.decode(gen_ids, skip_special_tokens=True)
         response_processed = response.split("<answer>")[-1].split("</answer>")[0].replace("\n", "").strip()
 
@@ -244,6 +272,10 @@ def main():
     ap.add_argument("--anc_m", type=float, default=0.12, help="SCMPruner Lowe-margin/sharpness gate (primary knob)")
     ap.add_argument("--anc_tau", type=float, default=0.6, help="SCMPruner cross-view cosine gate for a 'sharp' match")
     ap.add_argument("--scm_xview", type=int, default=1, help="SCMPruner: 1=xview coverage propagation on, 0=off")
+    ap.add_argument("--scm_r", type=float, default=7.0, help="QA over-select ratio N1/N2")
+    ap.add_argument("--scm_K", type=int, default=14, help="QA stage-2 prune layer (L/2=14)")
+    ap.add_argument("--scm_sig", default="attn", choices=["attn", "cosine"], help="QA stage-2 signal")
+    ap.add_argument("--scm_softweight", type=int, default=0, help="QA stage-1 saliency*relu(cos) soft-weight")
     ap.add_argument("--attn", default="flash_attention_2")
     ap.add_argument("--limit", type=int, default=None)
     args = ap.parse_args()
@@ -269,7 +301,7 @@ def main():
     compressor = (build_compressor(method, important_ratio=args.important_ratio)
                   if method not in ({"none"} | SPECIAL_METHODS) else None)
     need_capture = (compressor is not None and getattr(compressor, "needs_importance", True)) \
-        or method == "scmpruner"                              # scmpruner needs ViT saliency; fastv doesn't
+        or method in ("scmpruner", "scmpruner_qa")             # both need ViT saliency; fastv doesn't
     capture = QwenAttentionCapture(model) if need_capture else None
     tag = "baseline" if method == "none" else f"{method}-keep{int(round(args.keep_ratio*100))}"
     if method == "scmpruner":                                # auto-encode non-default knobs so a
@@ -282,6 +314,14 @@ def main():
         fastv_ctrl = QwenFastV(K=args.fastv_k)
         make_fastv_forward_qwen(model.model, fastv_ctrl)
 
+    qa_ctrl = None
+    if method == "scmpruner_qa":
+        from compressors.fastv import QwenFastV, make_fastv_forward_qwen
+        tag += scm.scmpruner_qa_tag_suffix(args.scm_r, args.scm_K, args.scm_sig, args.scm_softweight)
+        qa_ctrl = QwenFastV(K=args.scm_K)
+        qa_ctrl.signal = args.scm_sig; qa_ctrl.query_reduce = "mean"; qa_ctrl.per_view = False
+        make_fastv_forward_qwen(model.model, qa_ctrl)
+
     items = json.load(open(args.items))
     categories = ([t for t in ALL_TYPES if any(it["question_type"] == t for it in items)]
                   if args.category == "all" else [c.strip() for c in args.category.split(",") if c.strip()])
@@ -290,7 +330,7 @@ def main():
     print(f">>> Qwen2.5-VL VSI-Bench [{tag}] over {categories}")
     for category in categories:
         run_category(model, processor, items, category, args, compressor, capture, tag, out_dir, llm_cfg, eos_ids,
-                     fastv_ctrl)
+                     fastv_ctrl, qa_ctrl)
 
 
 if __name__ == "__main__":
