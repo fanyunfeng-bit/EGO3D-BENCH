@@ -11,6 +11,7 @@
 ## Global Constraints
 
 - Run everything under the `ego3d` env: `PATH=/home/fyf/miniconda3/envs/ego3d/bin:$PATH` (or `conda activate ego3d`). All commands from repo root.
+- **16-frame data (all smokes + experiments):** pass `--items data/vsibench/vsibench_items_16f.json --frames 16`. The 16-frame frames are already prepped under `data/vsibench/frames16/`; the default `--items data/vsibench/vsibench_items.json` is 6-frame — do NOT use it (6-frame is out of scope per the user).
 - No pytest / no build step in this repo. "Tests" = (a) standalone assert scripts run with the env python for pure functions, (b) `python -m py_compile` for syntax, (c) `--limit 2` smoke runs for model-dependent integration.
 - **Determinism is mandatory** and resume is by JSONL line count — the method must produce identical output across reruns (SCMPruner is RNG-free; the query signals are deterministic).
 - Both LLMs have **L=28 layers** → default prune layer **K=14 (=L/2)**; both frames tile to **n_tok=256** per view.
@@ -371,14 +372,16 @@ Expected: no output (OK).
 Run smoke (loads InternVL3-8B; ~1-2 min):
 ```bash
 python models/internvl3_vsibench.py --compress_method scmpruner_qa \
-  --frames 16 --keep_ratio 0.10 --category object_rel_distance --limit 2
+  --items data/vsibench/vsibench_items_16f.json --frames 16 \
+  --keep_ratio 0.10 --category object_rel_distance --limit 2
 ```
 Expected: prints `[result:scmpruner_qa-keep10:vsibench:object_rel_distance] ACC=... n=2`; writes `logs/InternVL3-8B-scmpruner_qa-keep10-vsibench/object_rel_distance.jsonl` with 2 rows. No assertion error (the `assert ... == feats.shape[0]` in prompt build must hold).
 
 Sanity smoke on a non-default knob (must write a DIFFERENT dir):
 ```bash
 python models/internvl3_vsibench.py --compress_method scmpruner_qa \
-  --frames 16 --keep_ratio 0.10 --scm_sig cosine --category object_rel_distance --limit 2
+  --items data/vsibench/vsibench_items_16f.json --frames 16 \
+  --keep_ratio 0.10 --scm_sig cosine --category object_rel_distance --limit 2
 ```
 Expected: dir `logs/InternVL3-8B-scmpruner_qa-keep10-sigcos-vsibench/`.
 
@@ -589,14 +592,16 @@ Expected: OK.
 Smoke (loads Qwen2.5-VL-7B):
 ```bash
 python models/qwen2.5_vl_vsibench.py --compress_method scmpruner_qa \
-  --frames 16 --keep_ratio 0.10 --category object_rel_distance --limit 2
+  --items data/vsibench/vsibench_items_16f.json --frames 16 \
+  --keep_ratio 0.10 --category object_rel_distance --limit 2
 ```
 Expected: `[result:scmpruner_qa-keep10:vsibench:object_rel_distance] ACC=... n=2`; dir `logs/Qwen2.5-VL-7B-scmpruner_qa-keep10-vsibench/`.
 
 Cosine + soft-weight smoke (different dir):
 ```bash
 python models/qwen2.5_vl_vsibench.py --compress_method scmpruner_qa \
-  --frames 16 --keep_ratio 0.10 --scm_sig cosine --scm_softweight 1 \
+  --items data/vsibench/vsibench_items_16f.json --frames 16 \
+  --keep_ratio 0.10 --scm_sig cosine --scm_softweight 1 \
   --category object_rel_distance --limit 2
 ```
 Expected: dir `logs/Qwen2.5-VL-7B-scmpruner_qa-keep10-sigcos-sw1-vsibench/`.
@@ -607,7 +612,8 @@ Determinism: run the first smoke twice into a fresh dir; the 2 JSONL rows must b
 
 ```bash
 python models/qwen2.5_vl_vsibench.py --compress_method fastv \
-  --frames 16 --keep_ratio 0.10 --category object_rel_distance --limit 2
+  --items data/vsibench/vsibench_items_16f.json --frames 16 \
+  --keep_ratio 0.10 --category object_rel_distance --limit 2
 ```
 Expected: runs as before (FastV per-view, attn) — confirms Task 4 defaults didn't regress FastV.
 
@@ -641,18 +647,19 @@ set -euo pipefail
 export PATH=/home/fyf/miniconda3/envs/ego3d/bin:$PATH
 export HF_HUB_OFFLINE=1 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 MODEL="${1:-qwen}"; KEEP="${2:-0.10}"
+ITEMS=data/vsibench/vsibench_items_16f.json          # 16-frame manifest (frames16/ already prepped)
 TASKS="object_rel_direction_easy,object_rel_direction_medium,object_rel_direction_hard,route_planning,object_rel_distance"
 if [ "$MODEL" = "qwen" ]; then RUNNER=models/qwen2.5_vl_vsibench.py; else RUNNER=models/internvl3_vsibench.py; fi
 
 # QA-SCMPruner ablation grid: signal x softweight x over-select r (K=14 fixed first)
 for SIG in attn cosine; do for SW in 0 1; do for R in 7 3; do
-  python "$RUNNER" --compress_method scmpruner_qa --frames 16 --keep_ratio "$KEEP" \
+  python "$RUNNER" --compress_method scmpruner_qa --items "$ITEMS" --frames 16 --keep_ratio "$KEEP" \
     --scm_sig "$SIG" --scm_softweight "$SW" --scm_r "$R" --category "$TASKS"
 done; done; done
 
 # baselines for the same budget (idempotent / resumable)
 for M in none plain_random vispruner scmpruner fastv; do
-  python "$RUNNER" --compress_method "$M" --frames 16 --keep_ratio "$KEEP" --category "$TASKS" || true
+  python "$RUNNER" --compress_method "$M" --items "$ITEMS" --frames 16 --keep_ratio "$KEEP" --category "$TASKS" || true
 done
 echo "done: logs/*-scmpruner_qa-keep* + baselines"
 ```
