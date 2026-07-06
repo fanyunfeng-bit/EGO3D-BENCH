@@ -50,6 +50,8 @@ class QwenLLMAttentionCapture:
     def __init__(self, self_attn):
         self.attn = self_attn
         self.last_row = None            # (kv_len,) attention from last query to each key, mean heads
+        self.query_pos = None         # set by the controller; enables mean-over-query reduce
+        self.query_reduce = "last"
         self.enabled = False
         self._orig = self_attn.forward
         self_attn.forward = self._forward
@@ -80,7 +82,11 @@ class QwenLLMAttentionCapture:
         causal = torch.triu(torch.full((q_len, kv_len), float("-inf"), device=scores.device,
                                        dtype=scores.dtype), diagonal=kv_len - q_len + 1)
         aw = torch.softmax(scores + causal, dim=-1, dtype=torch.float32)
-        self.last_row = aw[0, :, -1, :].mean(0)                             # (kv_len,)
+        if self.query_reduce == "mean" and self.query_pos is not None:
+            qp = self.query_pos.to(aw.device)
+            self.last_row = aw[0][:, qp, :].mean(dim=(0, 1))   # mean over heads and query rows
+        else:
+            self.last_row = aw[0, :, -1, :].mean(0)            # last query row (FastV)
         out = torch.matmul(aw.to(vv.dtype), vv).transpose(1, 2).reshape(bsz, q_len, -1)
         return (a.o_proj(out), None, past_key_value)
 
@@ -100,6 +106,9 @@ class QwenFastV:
         self.per_view = True      # FastV = per-view: rank/keep top keep_pv WITHIN each view
         self.n_views = None
         self.keep_pv = None       # tokens to keep per view
+        self.signal = "attn"          # 'attn' | 'cosine'
+        self.query_reduce = "last"    # 'last' (FastV) | 'mean' (ITS over query tokens)
+        self.query_pos = None         # LongTensor of query token indices (for 'mean' / 'cosine')
 
 
 def make_fastv_forward_qwen(text_model, ctrl):
@@ -115,6 +124,8 @@ def make_fastv_forward_qwen(text_model, ctrl):
     from transformers.modeling_outputs import BaseModelOutputWithPast
 
     ctrl.capture = QwenLLMAttentionCapture(text_model.layers[ctrl.K - 1].self_attn)
+    ctrl.capture.query_reduce = ctrl.query_reduce
+    ctrl.capture.query_pos = ctrl.query_pos
 
     def forward(self, input_ids=None, attention_mask=None, position_ids=None,
                 past_key_values=None, inputs_embeds=None, use_cache=None,
@@ -137,8 +148,23 @@ def make_fastv_forward_qwen(text_model, ctrl):
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
         do_prune = ctrl.active and S > 1
+        if do_prune and ctrl.signal == "attn":
+            ctrl.capture.query_reduce = ctrl.query_reduce
+            ctrl.capture.query_pos = ctrl.query_pos
         for idx, layer in enumerate(self.layers[: self.config.num_hidden_layers]):
             if do_prune and idx == ctrl.K:                               # prune BEFORE layer K
+                if ctrl.kept is None and ctrl.signal == "cosine":
+                    from compressors.scm import cosine_relevance
+                    vis = ctrl.vis_pos.to(hidden_states.device)
+                    score = cosine_relevance(hidden_states[0], vis, ctrl.query_pos.to(hidden_states.device))
+                    if ctrl.per_view and ctrl.n_views:
+                        nv = int(ctrl.n_views); ntok = vis.numel() // nv; kp = min(int(ctrl.keep_pv), ntok)
+                        loc = score.view(nv, ntok).topk(kp, dim=1).indices
+                        off = (torch.arange(nv, device=vis.device) * ntok).unsqueeze(1)
+                        ctrl.kept = vis[(loc + off).reshape(-1)].sort().values
+                    else:
+                        n2 = min(int(ctrl.N2), vis.numel())
+                        ctrl.kept = vis[torch.topk(score, n2).indices].sort().values
                 vis_set = set(ctrl.vis_pos.tolist()); kept = set(ctrl.kept.tolist())
                 keep = [i for i in range(hidden_states.shape[1]) if (i not in vis_set) or (i in kept)]
                 ki = torch.tensor(sorted(keep), device=hidden_states.device)
@@ -150,7 +176,7 @@ def make_fastv_forward_qwen(text_model, ctrl):
                 if causal_mask is not None:
                     causal_mask = causal_mask[:, :, ki][:, :, :, ki]
 
-            cap = do_prune and idx == ctrl.K - 1
+            cap = do_prune and ctrl.signal == "attn" and idx == ctrl.K - 1
             if cap:
                 ctrl.capture.enabled = True
             lo = layer(hidden_states, attention_mask=causal_mask, position_ids=position_ids,
