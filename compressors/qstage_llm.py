@@ -34,23 +34,25 @@ class QStage:
         self.per_view = False             # FastV per-view variant: rank/keep within each view
         self.n_views = None               # # views (per_view); vision tokens are grouped per view
         self.keep_pv = None               # tokens to keep per view (per_view)
+        self.query_reduce = "last"        # 'last' (FastV) | 'mean' (ITS-style over query tokens)
 
 
 def _select_keep(qs, hidden_states, attn_K_minus_1):
     """Return sorted LongTensor of vision indices to KEEP, computed at prefill. Global top-N2
     by default; if qs.per_view, keep top qs.keep_pv WITHIN each view (vision tokens are grouped
     per view) -> per-view budget, matching the single-view baselines."""
+    from compressors.scm import cosine_relevance
     vis = qs.vis_pos.to(hidden_states.device)
     if qs.signal == "attn":
         a = attn_K_minus_1.mean(dim=1).squeeze(0)            # (S,S) avg over heads, batch=1
-        last_q = qs.query_pos[-1].item() if qs.query_pos is not None else hidden_states.shape[1] - 1
-        score = a[last_q, vis]                               # last query token -> each vision token
+        if getattr(qs, "query_reduce", "last") == "mean" and qs.query_pos is not None:
+            qp = qs.query_pos.to(a.device)
+            score = a[qp][:, vis].mean(0)                    # mean over query tokens (ITS)
+        else:
+            last_q = qs.query_pos[-1].item() if qs.query_pos is not None else hidden_states.shape[1] - 1
+            score = a[last_q, vis]                           # last query token (FastV default)
     else:  # cosine
-        h = hidden_states[0]                                 # (S, D), batch=1
-        qp = qs.query_pos.to(h.device)
-        q_bar = F.normalize(h[qp].float().mean(0, keepdim=True), dim=-1)   # (1, D)
-        v = F.normalize(h[vis].float(), dim=-1)              # (N1, D)
-        score = (v @ q_bar.t()).squeeze(1)                   # (N1,)
+        score = cosine_relevance(hidden_states[0], vis, qs.query_pos.to(hidden_states.device))
     if getattr(qs, "per_view", False) and qs.n_views:
         nv = int(qs.n_views); ntok = vis.numel() // nv; kp = min(int(qs.keep_pv), ntok)
         loc = score.view(nv, ntok).topk(kp, dim=1).indices   # (nv, kp) within-view ranking

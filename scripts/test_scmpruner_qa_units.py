@@ -5,6 +5,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 import torch
 from compressors.scm import (scmpruner_qa_budgets, input_cos_relevance,
                              cosine_relevance, scmpruner_qa_tag_suffix)
+from compressors.qstage_llm import QStage, _select_keep
 
 
 def test_budgets():
@@ -34,6 +35,24 @@ def test_cosine_relevance():
     score = cosine_relevance(h, torch.tensor([0, 1]), torch.tensor([2]))
     assert score.shape == (2,)
     assert score[0] > score[1]                         # vis0 aligns with query, vis1 does not
+
+
+def test_select_keep_reduce():
+    # 4 tokens: idx0,1 vision; idx2,3 query. attn signal from a fake (S,S) weight matrix.
+    qs = QStage(K=1, signal="attn")
+    qs.vis_pos = torch.tensor([0, 1]); qs.query_pos = torch.tensor([2, 3])
+    qs.N2 = 1; qs.per_view = False
+    # attn_K_minus_1 shape (1, heads=1, S, S); rows=query positions attend to cols=keys
+    aw = torch.zeros(1, 1, 4, 4)
+    aw[0, 0, 2] = torch.tensor([0.9, 0.1, 0.0, 0.0])   # query tok2 -> vis0 strong
+    aw[0, 0, 3] = torch.tensor([0.3, 0.7, 0.0, 0.0])   # query tok3 (LAST) -> vis1
+    hidden = torch.zeros(1, 4, 2)
+    qs.query_reduce = "last"
+    keep_last = _select_keep(qs, hidden, aw)
+    assert keep_last.tolist() == [1], keep_last.tolist()   # last query row picks vis1
+    qs.query_reduce = "mean"; qs.kept_vis = None
+    keep_mean = _select_keep(qs, hidden, aw)
+    assert keep_mean.tolist() == [0], keep_mean.tolist()   # mean [0.6,0.4] picks vis0 -> differs from last
 
 
 def test_tag_suffix():
