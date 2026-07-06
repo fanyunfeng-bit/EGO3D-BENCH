@@ -29,6 +29,49 @@ def scmpruner_tag_suffix(rho_a=0.2, rho_s=0.4, anc_tau=0.6, anc_m=0.12, xview=Tr
     return s
 
 
+def scmpruner_qa_budgets(keep_ratio, M, r, K, L):
+    """Two-stage layer-average budget (Notes/CVSP-Method.md §13). Given target
+    layer-average token count T = keep_ratio*M, over-select ratio r, prune layer K,
+    total layers L: return (N1 stage-1 over-select, N2 stage-2 final, layer_avg)."""
+    T = keep_ratio * M
+    N2 = max(1, round(T * L / (r * K + L - K)))
+    N1 = min(M, max(N2, round(r * N2)))
+    layer_avg = (N1 * K + N2 * (L - K)) / L
+    return int(N1), int(N2), layer_avg
+
+
+def input_cos_relevance(vis_feats, query_embeds):
+    """Pre-LLM query relevance for the stage-1 soft-weight: relu(cos(v_i, q_bar)) with
+    q_bar = mean query token embedding. relu clamps anti-relevant (cos<0) tokens to 0
+    so they sort to the bottom of the saliency bucket. Returns (M,) >= 0."""
+    v = F.normalize(vis_feats.float(), dim=-1)
+    q = F.normalize(query_embeds.float().mean(0, keepdim=True), dim=-1)
+    return torch.relu((v @ q.t()).squeeze(1))
+
+
+def cosine_relevance(hidden, vis_idx, query_idx):
+    """In-LLM stage-2 'cosine' signal: cos(hidden[vis], mean hidden[query]) at layer K.
+    Not clamped (only used for top-N2 ranking, where the ordering is what matters)."""
+    q = F.normalize(hidden[query_idx].float().mean(0, keepdim=True), dim=-1)
+    v = F.normalize(hidden[vis_idx].float(), dim=-1)
+    return (v @ q.t()).squeeze(1)
+
+
+def scmpruner_qa_tag_suffix(r=7, K=14, sig="attn", softweight=0):
+    """Log-dir suffix encoding only non-default QA knobs (canonical r7/K14/attn/sw0 -> '')
+    so a sweep never collides with resume. e.g. '-r3', '-k7', '-sigcos', '-sw1'."""
+    s = ""
+    if round(r) != 7:
+        s += f"-r{int(round(r))}"
+    if int(K) != 14:
+        s += f"-k{int(K)}"
+    if sig != "attn":
+        s += f"-sig{sig[:3]}"
+    if int(softweight):
+        s += "-sw1"
+    return s
+
+
 def scmpruner_keep_indices(feats2d, saliency, n_views, n_tok, keep_ratio,
                            anc_tau=0.6, anc_m=0.12, rho_a=0.2, rho_s=0.4, xview=True):
     """End-to-end SCMPruner selection for one sample, shared by both VSI runners.
