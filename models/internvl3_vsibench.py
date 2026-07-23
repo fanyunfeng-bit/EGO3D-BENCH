@@ -32,7 +32,7 @@ from compressors.internvl_adapter import AttentionCapture, compute_visual_featur
 from compressors.qstage_llm import QStage, make_qstage_forward
 
 # methods not in the per-image registry: cross-view SCMPruner (pre-LLM) + in-LLM FastV
-SPECIAL_METHODS = {"scmpruner", "fastv", "scmpruner_qa"}
+SPECIAL_METHODS = {"scmpruner", "fastv", "scmpruner_qa", "mvpruner"}
 
 torch.manual_seed(42)
 
@@ -172,7 +172,7 @@ def scmpruner_qa_stage1(model, tokenizer, pixel_values, capture, question, args)
     return torch.cat(feats, dim=0), counts, N1, N2
 
 
-def run_category(model, tokenizer, items, category, args, compressor, capture, tag, out_dir, llm_cfg, fastv=None, qs=None):
+def run_category(model, tokenizer, items, category, args, compressor, capture, tag, out_dir, llm_cfg, fastv=None, qs=None, mv=None):
     save_path = f"{out_dir}/{category}.jsonl"
     processed = sum(1 for _ in open(save_path)) if os.path.exists(save_path) else 0
     cat_items = [it for it in items if it["question_type"] == category]
@@ -220,6 +220,15 @@ def run_category(model, tokenizer, items, category, args, compressor, capture, t
             qs.vis_pos = vis_pos
             qs.query_pos = torch.arange(last_vis + 1, ids.shape[0], device=ids.device)
             qs.N2 = N2; qs.kept_vis = None; qs.active = True
+        if mv is not None:               # MVPruner: two-stage in-LLM prune (keeps all pre-LLM)
+            ids = input_ids.reshape(-1)
+            vis_pos = torch.where(ids == model.img_context_token_id)[0]
+            last_vis = int(vis_pos[-1].item())
+            n_tok = vis_pos.numel() // n_frames
+            view_lengths = [n_tok] * n_frames
+            assert sum(view_lengths) == vis_pos.numel(), (sum(view_lengths), vis_pos.numel())
+            mv.configure(vis_pos, view_lengths, last_vis + 1, ids.shape[0], args.keep_ratio,
+                         model.language_model.config.num_hidden_layers)
         with efficiency.GpuProfile() as prof:
             generated = model.generate(
                 pixel_values=pixel_values, input_ids=input_ids,
@@ -229,6 +238,8 @@ def run_category(model, tokenizer, items, category, args, compressor, capture, t
             fastv.off()
         if args.compress_method == "scmpruner_qa":
             qs.active = False
+        if mv is not None:
+            mv.off()
         response = tokenizer.batch_decode(generated, skip_special_tokens=True)[0]
         response = response.split(template.sep.strip())[0].strip()
         response_processed = response.split("<answer>")[-1].split("</answer>")[0].replace("\n", "").strip()
@@ -273,6 +284,8 @@ def main():
     ap.add_argument("--frames", type=int, default=6, help="frames/video (must match prep)")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--fastv_k", type=int, default=2, help="FastV: prune layer K (default 2)")
+    ap.add_argument("--mv_l1", type=int, default=0, help="MVPruner stage-1 prune layer (paper 0)")
+    ap.add_argument("--mv_l2", type=int, default=16, help="MVPruner stage-2 prune layer (paper 16)")
     ap.add_argument("--scm_rho_a", type=float, default=0.2, help="SCMPruner anchor budget frac (a20s40=0.2)")
     ap.add_argument("--scm_rho_s", type=float, default=0.4, help="SCMPruner saliency budget frac (a20s40=0.4)")
     ap.add_argument("--anc_m", type=float, default=0.12, help="SCMPruner Lowe-margin/sharpness gate (primary knob)")
@@ -317,6 +330,14 @@ def main():
         from compressors.fastv import FastVInternVL
         fastv = FastVInternVL(model.language_model.model, K=args.fastv_k)
 
+    mv = None
+    if method == "mvpruner":                                   # two-stage in-LLM (arXiv:2606.27660)
+        from compressors.mvpruner import MVPruner, make_mvpruner_forward_internvl
+        if (args.mv_l1, args.mv_l2) != (0, 16):
+            tag += f"-l{args.mv_l1}_{args.mv_l2}"
+        mv = MVPruner(stage1_layer=args.mv_l1, stage2_layer=args.mv_l2)
+        make_mvpruner_forward_internvl(model.language_model.model, mv)
+
     items = json.load(open(args.items))
     if args.category == "all":
         categories = [t for t in ALL_TYPES if any(it["question_type"] == t for it in items)]
@@ -327,7 +348,7 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
     print(f">>> VSI-Bench [{tag}] over {len(categories)} categories: {categories}")
     for category in categories:
-        run_category(model, tokenizer, items, category, args, compressor, capture, tag, out_dir, llm_cfg, fastv, qs)
+        run_category(model, tokenizer, items, category, args, compressor, capture, tag, out_dir, llm_cfg, fastv, qs, mv)
 
 
 if __name__ == "__main__":

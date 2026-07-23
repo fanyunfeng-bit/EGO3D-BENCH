@@ -36,7 +36,7 @@ from compressors import build_compressor, scm
 from compressors.qwen_adapter import QwenAttentionCapture, merged_importance, qwen_select_per_image
 
 # methods not in the per-image registry: cross-view SCMPruner (pre-LLM) + in-LLM FastV
-SPECIAL_METHODS = {"scmpruner", "fastv", "scmpruner_qa"}
+SPECIAL_METHODS = {"scmpruner", "fastv", "scmpruner_qa", "mvpruner"}
 
 torch.manual_seed(42)
 
@@ -131,7 +131,7 @@ def greedy_decode(model, inputs_embeds, position_ids, eos_ids, max_new_tokens=16
 
 @torch.no_grad()
 def run_category(model, processor, items, category, args, compressor, capture, tag, out_dir, llm_cfg, eos_ids,
-                 fastv_ctrl=None, qa_ctrl=None):
+                 fastv_ctrl=None, qa_ctrl=None, mv_ctrl=None):
     save_path = f"{out_dir}/{category}.jsonl"
     processed = sum(1 for _ in open(save_path)) if os.path.exists(save_path) else 0
     cat_items = [it for it in items if it["question_type"] == category]
@@ -222,12 +222,24 @@ def run_category(model, processor, items, category, args, compressor, capture, t
             qa_ctrl.query_pos = torch.arange(last_vis + 1, red_ids.shape[0], device=red_ids.device)
             qa_ctrl.n_views = inputs["image_grid_thw"].shape[0]
             qa_ctrl.N2 = N2; qa_ctrl.kept = None; qa_ctrl.active = True
+        if mv_ctrl is not None:          # MVPruner: two-stage in-LLM prune (keeps all pre-LLM)
+            red_ids = inputs["input_ids"][0][keep_full]
+            vis_pos_red = torch.where(red_ids == image_token_id)[0]
+            last_vis = int(vis_pos_red[-1].item())
+            grid = inputs["image_grid_thw"]
+            merge = model.config.vision_config.spatial_merge_size
+            view_lengths = [int(t * h * w) // (merge * merge) for t, h, w in grid.tolist()]
+            assert sum(view_lengths) == vis_pos_red.numel(), (sum(view_lengths), vis_pos_red.numel())
+            mv_ctrl.configure(vis_pos_red, view_lengths, last_vis + 1, red_ids.shape[0],
+                              args.keep_ratio, model.model.config.num_hidden_layers)
         with efficiency.GpuProfile() as prof:
             gen_ids = greedy_decode(model, red_embeds, red_pos, eos_ids)
         if fastv_ctrl is not None:
             fastv_ctrl.active = False
         if qa_ctrl is not None:
             qa_ctrl.active = False
+        if mv_ctrl is not None:
+            mv_ctrl.off()
         response = processor.tokenizer.decode(gen_ids, skip_special_tokens=True)
         response_processed = response.split("<answer>")[-1].split("</answer>")[0].replace("\n", "").strip()
 
@@ -276,6 +288,8 @@ def main():
     ap.add_argument("--scm_K", type=int, default=14, help="QA stage-2 prune layer (L/2=14)")
     ap.add_argument("--scm_sig", default="attn", choices=["attn", "cosine"], help="QA stage-2 signal")
     ap.add_argument("--scm_softweight", type=int, default=0, help="QA stage-1 saliency*relu(cos) soft-weight")
+    ap.add_argument("--mv_l1", type=int, default=0, help="MVPruner stage-1 prune layer (paper 0)")
+    ap.add_argument("--mv_l2", type=int, default=16, help="MVPruner stage-2 prune layer (paper 16)")
     ap.add_argument("--attn", default="flash_attention_2")
     ap.add_argument("--limit", type=int, default=None)
     args = ap.parse_args()
@@ -324,6 +338,14 @@ def main():
         qa_ctrl.signal = args.scm_sig; qa_ctrl.query_reduce = "mean"; qa_ctrl.per_view = False
         make_fastv_forward_qwen(model.model, qa_ctrl)
 
+    mv_ctrl = None
+    if method == "mvpruner":                                   # two-stage in-LLM (arXiv:2606.27660)
+        from compressors.mvpruner import MVPruner, make_mvpruner_forward_qwen
+        if (args.mv_l1, args.mv_l2) != (0, 16):
+            tag += f"-l{args.mv_l1}_{args.mv_l2}"
+        mv_ctrl = MVPruner(stage1_layer=args.mv_l1, stage2_layer=args.mv_l2)
+        make_mvpruner_forward_qwen(model.model, mv_ctrl)
+
     items = json.load(open(args.items))
     categories = ([t for t in ALL_TYPES if any(it["question_type"] == t for it in items)]
                   if args.category == "all" else [c.strip() for c in args.category.split(",") if c.strip()])
@@ -332,7 +354,7 @@ def main():
     print(f">>> Qwen2.5-VL VSI-Bench [{tag}] over {categories}")
     for category in categories:
         run_category(model, processor, items, category, args, compressor, capture, tag, out_dir, llm_cfg, eos_ids,
-                     fastv_ctrl, qa_ctrl)
+                     fastv_ctrl, qa_ctrl, mv_ctrl)
 
 
 if __name__ == "__main__":
